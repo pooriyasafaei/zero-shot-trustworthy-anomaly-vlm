@@ -127,14 +127,35 @@ class QwenScorer(Scorer):
         return self._processor(text=[chat], images=[image], padding=True,
                                return_tensors="pt").to(self._model.device)
 
+    @staticmethod
+    def _verdict_position(tokenizer, token_ids: list[int], yes_no: set[int]) -> int | None:
+        """Index of the token carrying the verdict, or ``None``.
+
+        **The search must start after the ``ANSWER:`` marker.** The free-text
+        ``OBSERVATION`` field routinely contains a lowercase "no" - "intact with no
+        visible cracks" - which tokenises to the same id as the verdict "No".
+        Scanning from the start of the generation therefore reads P(YES) at a
+        position that has nothing to do with the verdict; measured on MVTec that
+        hit 50.3% of generations and silently corrupted every logprob score.
+
+        Falls back to the *last* candidate when no marker is found, since the
+        response format puts the verdict last.
+        """
+        start = None
+        for k in range(1, len(token_ids) + 1):
+            if "ANSWER" in tokenizer.decode(token_ids[:k]):
+                start = k
+                break
+        if start is not None:
+            for k in range(start, len(token_ids)):
+                if token_ids[k] in yes_no:
+                    return k
+        hits = [k for k, t in enumerate(token_ids) if t in yes_no]
+        return hits[-1] if hits else None
+
     @torch.no_grad()
     def _greedy_with_logprob(self, image: Image.Image, prompt_text: str) -> tuple[VlmSample, float | None]:
-        """Greedy decode, then read P(YES) at the verdict token position.
-
-        The verdict position is found by scanning the generated tokens for the
-        first one that decodes to YES/NO after the ``ANSWER:`` marker, which is
-        robust to the model padding the structured fields differently each time.
-        """
+        """Greedy decode, then read P(YES) at the verdict token position."""
         inputs = self._inputs(image, prompt_text)
         out = self._model.generate(
             **inputs, max_new_tokens=self.config.max_new_tokens, do_sample=False,
@@ -145,16 +166,15 @@ class QwenScorer(Scorer):
         text = self._processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
         sample = parse_generation(text)
 
+        ids = new_tokens.tolist()
+        step = self._verdict_position(self._processor.tokenizer, ids,
+                                      set(self._yes_ids) | set(self._no_ids))
         p_yes = None
-        yes_set, no_set = set(self._yes_ids), set(self._no_ids)
-        for step, tok_id in enumerate(new_tokens.tolist()):
-            if tok_id in yes_set or tok_id in no_set:
-                logits = out.scores[step][0].float()
-                lp = torch.log_softmax(logits, dim=-1)
-                yes = torch.logsumexp(lp[self._yes_ids], dim=0)
-                no = torch.logsumexp(lp[self._no_ids], dim=0)
-                p_yes = float(torch.sigmoid(yes - no))
-                break
+        if step is not None and step < len(out.scores):
+            lp = torch.log_softmax(out.scores[step][0].float(), dim=-1)
+            yes = torch.logsumexp(lp[self._yes_ids], dim=0)
+            no = torch.logsumexp(lp[self._no_ids], dim=0)
+            p_yes = float(torch.sigmoid(yes - no))
         return sample, p_yes
 
     @torch.no_grad()

@@ -124,3 +124,59 @@ def test_verdict_token_ids_cover_spaced_and_cased_forms():
 
     ids = _variant_token_ids(FakeTok(), ["YES", "Yes", "yes"])
     assert ids == [1, 2, 3, 5]            # deduped, multi-token "yes" dropped
+
+
+class _FakeTok:
+    """Tokeniser stand-in: one id per word, matching Qwen's real collision."""
+
+    VOCAB = {"OBSERVATION": 1, ":": 2, "The": 3, "bottle": 4, "is": 5, "intact": 6,
+             "with": 7, " no": 8, "visible": 9, "cracks": 10, "DEFECT_TYPE": 11,
+             "NONE": 12, "ANSWER": 13, "YES": 14, "NO": 15, "\n": 16}
+    INV = {v: k for k, v in VOCAB.items()}
+
+    def decode(self, ids):
+        return " ".join(self.INV[i] for i in ids)
+
+
+def test_verdict_is_read_after_the_answer_marker_not_before():
+    """The bug that corrupted 50% of the VLM scores, pinned.
+
+    'intact with no visible cracks' in OBSERVATION contains a ' no' token with the
+    same id as the verdict 'No'. Scanning from the start reads P(YES) at a position
+    unrelated to the verdict.
+    """
+    from tzsad.scorers.qwen_scorer import QwenScorer
+
+    tok = _FakeTok()
+    v = tok.VOCAB
+    ids = [v["OBSERVATION"], v[":"], v["The"], v["bottle"], v["is"], v["intact"],
+           v["with"], v[" no"], v["visible"], v["cracks"],
+           v["DEFECT_TYPE"], v[":"], v["NONE"],
+           v["ANSWER"], v[":"], v["YES"]]
+    yes_no = {v["YES"], v["NO"], v[" no"]}
+
+    pos = QwenScorer._verdict_position(tok, ids, yes_no)
+    assert pos == 15, "must land on the verdict token, not the ' no' inside OBSERVATION"
+    assert ids[pos] == v["YES"]
+    # The naive scan is what we are guarding against.
+    assert next(k for k, t in enumerate(ids) if t in yes_no) == 7
+
+
+def test_verdict_position_falls_back_to_the_last_candidate():
+    """With no ANSWER marker the verdict is still last in the response format."""
+    from tzsad.scorers.qwen_scorer import QwenScorer
+
+    tok = _FakeTok()
+    v = tok.VOCAB
+    ids = [v["The"], v["bottle"], v["is"], v["intact"], v["with"], v[" no"],
+           v["cracks"], v["NO"]]
+    pos = QwenScorer._verdict_position(tok, ids, {v["YES"], v["NO"], v[" no"]})
+    assert pos == 7 and ids[pos] == v["NO"]
+
+
+def test_verdict_position_is_none_without_any_candidate():
+    from tzsad.scorers.qwen_scorer import QwenScorer
+
+    tok = _FakeTok()
+    v = tok.VOCAB
+    assert QwenScorer._verdict_position(tok, [v["The"], v["bottle"]], {v["YES"], v["NO"]}) is None
