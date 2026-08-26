@@ -213,3 +213,23 @@ def test_pure_noise_is_never_reported_as_informative():
     tbl = error_prediction_table(_imbalanced_errors(), "correct", n_boot=300)
     noise = tbl[(tbl.signal == "u_pure_noise") & (tbl.scope == "POOLED")].iloc[0]
     assert not noise.informative and not noise.beats_baseline
+
+
+def test_undefined_correlation_counts_as_silent_failure_not_as_a_pass():
+    """A constant signal has an undefined Spearman rho.
+
+    Treating NaN as "not < 0.5" lets a signal that never moves at all pass the
+    silent-failure check, which inverts the meaning of the test: never moving is
+    the worst case, not a clean bill of health.
+    """
+    import pandas as pd
+
+    mono = pd.DataFrame({
+        "signal": ["constant", "rises", "falls"],
+        "spearman_severity_vs_uncertainty": [float("nan"), 0.9, -0.8],
+        "delta_auroc_at_s5": [-0.10, -0.10, -0.10],
+    })
+    rho = mono["spearman_severity_vs_uncertainty"]
+    degraded = mono["delta_auroc_at_s5"] < -0.02
+    silent = degraded & (rho.isna() | (rho < 0.5))
+    assert silent.tolist() == [True, False, True]

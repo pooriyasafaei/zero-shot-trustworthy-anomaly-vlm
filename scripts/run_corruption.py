@@ -32,16 +32,28 @@ from tzsad.utils.repro import start_run
 from tzsad.viz.plots import _spearman, plot_corruption_sweep
 
 
-def evaluate_setting(cfg, index, embedders, corruption: str, severity: int) -> dict:
-    """Score one (corruption, severity) cell and summarise it."""
-    P.stage_embed(cfg, index, corruption, severity)
-    per_backbone = P.stage_score_clip(cfg, index, embedders, corruption, severity)
-    records = per_backbone[P.backbones_of(cfg)[0].cache_tag]
-    test, _, coverage = P.stage_calibrate(cfg, records)
+def evaluate_setting(cfg, index, embedders, corruption: str, severity: int,
+                     clean_train: pd.DataFrame) -> dict:
+    """Score one (corruption, severity) cell against *clean* conformal thresholds.
 
-    # Calibration stays fixed at the clean thresholds: that is the deployment
-    # scenario. Recalibrating under corruption would hide the failure we measure.
-    test = P.stage_uncertainty_clip(cfg, test, per_backbone, None)
+    The deployment scenario is a system calibrated once on clean normal data and
+    then fed degraded input. Re-calibrating on corrupted normals would let the
+    threshold drift with the corruption and hide exactly the failure being
+    measured, so only the test split is corrupted and the calibration pool is the
+    clean ``train/good`` records passed in. That also avoids re-embedding ~2/3 of
+    the dataset in every one of the 35 cells.
+    """
+    test_index = index[index["split"] == "test"]
+    P.stage_embed(cfg, test_index, corruption, severity, splits=("test",))
+    per_backbone = P.stage_score_clip(cfg, test_index, embedders, corruption, severity)
+    corrupted_test = per_backbone[P.backbones_of(cfg)[0].cache_tag]
+
+    records = pd.concat([clean_train, corrupted_test], ignore_index=True)
+    test, _, coverage = P.stage_calibrate(cfg, records)
+    test = P.stage_uncertainty_modes(cfg, test)
+    test = P.stage_uncertainty_clip(cfg, test, {P.backbones_of(cfg)[0].cache_tag: records}, None,
+                                    corruption=corruption, severity=severity,
+                                    reference=clean_train)
     au = bootstrap_metric(test["label"].to_numpy(), test["anomaly_score"].to_numpy(),
                           safe_auroc, int(cfg.eval.n_boot), seed=int(cfg.seed))
     row = {"corruption": corruption, "severity": severity, "n": len(test),
@@ -76,12 +88,16 @@ def main(argv: list[str] | None = None) -> int:
 
     index = P.stage_index(cfg)
     embedders = P.stage_embed(cfg, index)
+    clean_all = P.stage_score_clip(cfg, index, embedders)[P.backbones_of(cfg)[0].cache_tag]
+    clean_train = clean_all[(clean_all.split == "train") & (clean_all.label == 0)]
+    log.info("clean calibration pool: %d normal images (never corrupted)", len(clean_train))
 
-    rows = [evaluate_setting(cfg, index, embedders, "none", 0)]
+    rows = [evaluate_setting(cfg, index, embedders, "none", 0, clean_train)]
     log.info("clean AUROC %.4f", rows[0]["auroc"])
     for corruption in cfg.corruption.corruptions:
         for severity in cfg.corruption.severities:
-            row = evaluate_setting(cfg, index, embedders, str(corruption), int(severity))
+            row = evaluate_setting(cfg, index, embedders, str(corruption), int(severity),
+                                   clean_train)
             rows.append(row)
             log.info("%-18s s=%d  AUROC %.4f  acc %.3f", corruption, severity,
                      row["auroc"], row["accuracy"])
@@ -112,8 +128,13 @@ def main(argv: list[str] | None = None) -> int:
                 "delta_uncertainty_at_s5": float(g[key].iloc[-1] - base[key]),
             })
     mono = pd.DataFrame(mono_rows)
-    mono["silent_failure"] = (mono["spearman_severity_vs_uncertainty"] < 0.5) & \
-                             (mono["delta_auroc_at_s5"] < -0.02)
+    # A constant signal gives an undefined correlation. That must read as
+    # "cannot tell" - and a signal that never moves is the worst kind of silent
+    # failure - rather than silently passing the < 0.5 test as NaN does.
+    rho = mono["spearman_severity_vs_uncertainty"]
+    degraded = mono["delta_auroc_at_s5"] < -0.02
+    mono["rho_undefined"] = rho.isna()
+    mono["silent_failure"] = degraded & (rho.isna() | (rho < 0.5))
     mono.to_csv(report_dir / "corruption_monotonicity.csv", index=False)
 
     plot_corruption_sweep(sweep[sweep.corruption != "none"], run_dir / "figures" / "corruption_sweep",

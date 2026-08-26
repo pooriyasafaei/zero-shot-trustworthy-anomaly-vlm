@@ -1,0 +1,12 @@
+# Cache ViT-L/14 over the full split, for the BackboneEnsemble estimator.
+# Split out so the heterogeneous backbones can be embedded on separate GPUs.
+defaults: [clip_full.yaml]
+paths: {run_name: ens_vitl14}
+data: {subset: full}
+clip:
+  backbones: [{name: ViT-L-14, pretrained: openai}]
+  batch_size: 32
+  windows: {enabled: false}
+uncertainty:
+  estimators: [prompt_std]
+  tta: {enabled: false, views: []}

@@ -11,6 +11,6 @@ clip:
     - {name: ViT-L-14, pretrained: openai}
 
 uncertainty:
-  estimators: [prompt_std, prompt_std_z, manifold_knn, backbone_ens, tta_var]
+  estimators: [prompt_std, prompt_std_z, manifold_knn, manifold_knn_raw, backbone_ens, tta_var]
   tta:
     enabled: true

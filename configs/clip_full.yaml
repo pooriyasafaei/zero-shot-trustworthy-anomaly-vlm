@@ -9,4 +9,4 @@ clip:
     enabled: true
 
 uncertainty:
-  estimators: [prompt_std, prompt_std_z, manifold_knn]
+  estimators: [prompt_std, prompt_std_z, manifold_knn, manifold_knn_raw]

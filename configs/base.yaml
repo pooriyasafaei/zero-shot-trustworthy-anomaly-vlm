@@ -64,7 +64,7 @@ conformal:
     delta: 0.05
 
 uncertainty:
-  estimators: [prompt_std, prompt_std_z, manifold_knn]
+  estimators: [prompt_std, prompt_std_z, manifold_knn, manifold_knn_raw]
   manifold_k: 5
   tta:
     enabled: false

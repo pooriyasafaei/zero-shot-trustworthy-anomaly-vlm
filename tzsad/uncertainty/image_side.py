@@ -54,7 +54,7 @@ class PromptEnsembleStd(UncertaintyEstimator):
 
 
 class NormalizedPromptEnsemble(UncertaintyEstimator):
-    """Prompt-ensemble spread after z-scoring each template across the dataset.
+    """Prompt-ensemble spread after z-scoring each template.
 
     Kind
     ----
@@ -62,36 +62,72 @@ class NormalizedPromptEnsemble(UncertaintyEstimator):
 
     Rationale
     ---------
-    Each template carries a constant offset and a constant gain (some phrasings
-    simply score everything higher). Standardising per template *within a
-    category* removes both, so what remains is genuine per-image disagreement
-    rather than the template's own bias. This is the cheap rescue of
-    :class:`PromptEnsembleStd`; if it also fails, that is a clean negative result.
+    Each template carries a constant offset and gain (some phrasings score
+    everything higher). Standardising per template within a category removes both,
+    so what remains is genuine per-image disagreement rather than template bias.
+    This is the cheap rescue of :class:`PromptEnsembleStd`.
+
+    Fit it, do not let it standardise against the test batch
+    -------------------------------------------------------
+    Call :meth:`fit` with the ``train/good`` records first. Without that the
+    estimator falls back to standardising against *whatever frame it is handed*,
+    which has two problems: an image's uncertainty then depends on which other
+    images share its batch (test-set leakage), and - measured on MVTec - dividing
+    by the corrupted batch's own spread cancels almost the whole distribution-shift
+    signal. Against a fixed clean reference the mean rises 0.74 -> 2.15 from clean
+    to defocus-blur severity 5; transductively it only reaches 0.78.
 
     Failure modes
     -------------
-    Still text-side: cannot see anything the image encoder is uncertain about,
-    and z-scoring makes the signal depend on the composition of the test set.
+    Still text-side: it cannot see anything the image encoder is unsure about. And
+    an unfitted instance is transductive, which is why that path warns.
     """
 
     name = "prompt_std_z"
     info = EstimatorInfo(
         kind="aleatoric (text-side)",
-        inputs="per-template score columns",
-        failure_modes="text-side only; transductive (depends on the test set composition)",
+        inputs="per-template score columns + train/good reference statistics",
+        failure_modes="text-side only; transductive and shift-blind unless fitted",
     )
 
     def __init__(self, use_raw: bool = True, group_col: str = "category") -> None:
         self.use_raw = use_raw
         self.group_col = group_col
+        self.reference_: dict[str, dict[str, tuple[float, float]]] = {}
+
+    def fit(self, reference: pd.DataFrame) -> "NormalizedPromptEnsemble":
+        """Store per-category, per-template mean/std from normal-only records."""
+        if "label" in reference.columns and (reference["label"] != 0).any():
+            raise ValueError("the reference for z-scoring must be normal-only data")
+        cols = template_columns(reference, raw=self.use_raw)
+        if not cols:
+            raise KeyError("reference frame has no per-template columns")
+        self.reference_ = {
+            str(group): {c: (float(g[c].mean()), float(g[c].std(ddof=0)) or 1.0) for c in cols}
+            for group, g in reference.groupby(self.group_col, sort=True)
+        }
+        return self
 
     def compute(self, records: pd.DataFrame, **kwargs) -> pd.Series:
         cols = template_columns(records, raw=self.use_raw)
         if not cols:
             raise KeyError("no per-template columns; run ClipScorer with keep_per_template=True")
-        groups = records[self.group_col] if self.group_col in records else None
-        z = np.column_stack([zscore(records[c], groups).to_numpy() for c in cols])
-        return pd.Series(z.std(axis=1, ddof=0), index=records.index)
+        if not self.reference_:
+            log.warning("%s is unfitted: standardising against the evaluation batch, which "
+                        "leaks across images and hides distribution shift. Call fit(train_good).",
+                        self.name)
+            groups = records[self.group_col] if self.group_col in records else None
+            z = np.column_stack([zscore(records[c], groups).to_numpy() for c in cols])
+            return pd.Series(z.std(axis=1, ddof=0), index=records.index)
+
+        out = pd.Series(np.nan, index=records.index, dtype=float)
+        for group, g in records.groupby(self.group_col, sort=True):
+            ref = self.reference_.get(str(group))
+            if ref is None:
+                raise KeyError(f"no reference statistics for {group!r}; fit on all categories")
+            z = np.column_stack([(g[c].to_numpy() - ref[c][0]) / ref[c][1] for c in cols])
+            out.loc[g.index] = z.std(axis=1, ddof=0)
+        return out
 
 
 class BackboneEnsemble(UncertaintyEstimator):
@@ -216,6 +252,14 @@ class NormalManifoldDistance(UncertaintyEstimator):
     but in-distribution part) leaves this signal flat; and it is a PatchCore-lite,
     so it inherits PatchCore's sensitivity to bank size and to category alignment.
 
+    **Rank normalisation destroys the shift signal.** ``normalize_per_category=True``
+    maps distances to within-category ranks, which is right for ranking images
+    *inside* a category and for AURC, but it makes the signal scale-free: the mean
+    is 0.5 whatever the input. That erases the property this estimator exists for,
+    since under corruption the absolute distance to the normal manifold grows while
+    the rank does not move at all. Use ``manifold_knn_raw`` for any question about
+    distribution shift, including the corruption sweep.
+
     **Its sign depends on the decision.** Measured on MVTec (ViT-B/16, delta=0.05)
     it reaches 0.824 error-prediction AUROC among images predicted *normal* - it
     is the strongest signal in the suite for catching a missed anomaly - but 0.145
@@ -268,3 +312,31 @@ class NormalManifoldDistance(UncertaintyEstimator):
         if self.normalize_per_category:
             out = out.groupby(records["category"]).rank(pct=True)
         return out
+
+
+class RawNormalManifoldDistance(NormalManifoldDistance):
+    """kNN distance to the ``train/good`` bank on its **absolute** scale.
+
+    Identical to :class:`NormalManifoldDistance` except that distances are not
+    rank-normalised, so the value can grow when the whole input distribution
+    shifts. This is the variant the corruption sweep needs: a rank is invariant to
+    the shift it is supposed to detect.
+
+    Failure modes
+    -------------
+    Not comparable across categories - ``screw`` and ``carpet`` sit at different
+    absolute distances from their own banks - so it must not be pooled across
+    categories without standardising against each category's *clean* distance.
+    """
+
+    name = "manifold_knn_raw"
+    info = EstimatorInfo(
+        kind="distributional",
+        inputs="cached image embeddings for test + train/good",
+        failure_modes="absolute scale differs per category; do not pool without standardising",
+    )
+
+    def __init__(self, cache: EmbeddingCache, model_tag: str, k: int = 5,
+                 corruption: str = "none", severity: int = 0) -> None:
+        super().__init__(cache, model_tag, k, corruption, severity,
+                         normalize_per_category=False)

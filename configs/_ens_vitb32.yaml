@@ -1,0 +1,13 @@
+# Cache OpenCLIP ViT-B/32 (LAION-2B) plus the TTA views of the primary ViT-B/16.
+# Genuinely different pretraining data is what makes the ensemble disagreement
+# epistemic rather than a re-reading of the same model.
+defaults: [clip_full.yaml]
+paths: {run_name: ens_vitb32}
+data: {subset: full}
+clip:
+  backbones: [{name: ViT-B-32, pretrained: laion2b_s34b_b79k}]
+  batch_size: 64
+  windows: {enabled: false}
+uncertainty:
+  estimators: [prompt_std]
+  tta: {enabled: false, views: []}

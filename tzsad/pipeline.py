@@ -23,7 +23,8 @@ from .records import read_records, write_records
 from .scorers.base import ScoringContext
 from .scorers.clip_scorer import ClipScorer, ClipScorerConfig
 from .uncertainty.image_side import (BackboneEnsemble, NormalManifoldDistance,
-                                     NormalizedPromptEnsemble, PromptEnsembleStd, TTAVariance)
+                                     NormalizedPromptEnsemble, PromptEnsembleStd,
+                                     RawNormalManifoldDistance, TTAVariance)
 from .utils.logging import get_logger
 
 log = get_logger("pipeline")
@@ -81,8 +82,16 @@ def stage_index(cfg: DictConfig) -> pd.DataFrame:
 
 
 def stage_embed(cfg: DictConfig, index: pd.DataFrame, corruption: str = "none",
-                severity: int = 0) -> dict[str, ClipEmbedder]:
-    """The GPU pass: cache image (and window, and TTA-view) embeddings per backbone."""
+                severity: int = 0, splits: tuple[str, ...] | None = None) -> dict[str, ClipEmbedder]:
+    """The GPU pass: cache image (and window, and TTA-view) embeddings per backbone.
+
+    ``splits`` restricts which splits are embedded. The corruption sweep passes
+    ``("test",)``: the conformal thresholds must stay fixed at their *clean*
+    values, so corrupting the calibration pool would be wrong as well as wasteful
+    (it is ~2/3 of the images on MVTec).
+    """
+    if splits is not None:
+        index = index[index["split"].isin(splits)]
     cache = EmbeddingCache(cfg.paths.cache)
     win = window_spec_of(cfg)
     embedders: dict[str, ClipEmbedder] = {}
@@ -107,9 +116,9 @@ def _embed_tta_views(cfg: DictConfig, index: pd.DataFrame, cache: EmbeddingCache
         for (category, split), group in index.groupby(["category", "split"], sort=True):
             keys = dict(model_tag=tag, category=category, split=split, kind="image",
                         corruption="none", severity=0, extra=f"tta-{view}")
-            if cache.has(**keys):
-                continue
             group = group.sort_values("image_id")
+            if cache.covers(group["image_id"].tolist(), **keys):
+                continue
             cache.save(group["image_id"].tolist(),
                        embedder.encode_images(group["path"].tolist(), fn),
                        meta={"tta_view": view}, **keys)
@@ -356,7 +365,9 @@ def assign_bakeoff_split(records: pd.DataFrame, frac_select: float = 0.5, seed: 
 
 def stage_uncertainty_clip(cfg: DictConfig, test_records: pd.DataFrame,
                            per_backbone: Mapping[str, pd.DataFrame],
-                           tta_frames: list[pd.DataFrame] | None = None) -> pd.DataFrame:
+                           tta_frames: list[pd.DataFrame] | None = None,
+                           corruption: str = "none", severity: int = 0,
+                           reference: pd.DataFrame | None = None) -> pd.DataFrame:
     """Attach every configured image-side uncertainty column to the test records."""
     cache = EmbeddingCache(cfg.paths.cache)
     primary = backbones_of(cfg)[0].cache_tag
@@ -366,9 +377,16 @@ def stage_uncertainty_clip(cfg: DictConfig, test_records: pd.DataFrame,
     if "prompt_std" in wanted:
         out = PromptEnsembleStd().attach(out)
     if "prompt_std_z" in wanted:
-        out = NormalizedPromptEnsemble().attach(out)
+        est = NormalizedPromptEnsemble()
+        if reference is not None and len(reference):
+            est.fit(reference)      # clean train/good stats: inductive, shift-visible
+        out = est.attach(out)
     if "manifold_knn" in wanted:
-        out = NormalManifoldDistance(cache, primary, k=int(cfg.uncertainty.manifold_k)).attach(out)
+        out = NormalManifoldDistance(cache, primary, k=int(cfg.uncertainty.manifold_k),
+                                     corruption=corruption, severity=severity).attach(out)
+    if "manifold_knn_raw" in wanted:
+        out = RawNormalManifoldDistance(cache, primary, k=int(cfg.uncertainty.manifold_k),
+                                        corruption=corruption, severity=severity).attach(out)
     if "backbone_ens" in wanted and len(per_backbone) >= 2:
         test_only = {t: f[f["split"] == "test"] for t, f in per_backbone.items()}
         out = BackboneEnsemble().attach(out, score_frames=test_only)

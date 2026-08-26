@@ -51,7 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     P.stage_conformal_sweeps(cfg, records, run_dir / "report")
 
     tta = P.stage_tta_scores(cfg, index, embedders) if cfg.uncertainty.tta.enabled else None
-    test = P.stage_uncertainty_clip(cfg, test, per_backbone, tta)
+    normal_ref = records[(records["split"] == "train") & (records["label"] == 0)]
+    test = P.stage_uncertainty_clip(cfg, test, per_backbone, tta, reference=normal_ref)
     P.save_stage(test, run_dir / "records_test_scored.parquet")
 
     report_dir = run_dir / "report"

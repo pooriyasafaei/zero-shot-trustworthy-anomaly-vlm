@@ -200,3 +200,131 @@ def test_reproduces_the_prototype_auroc_from_cached_records():
         assert measured[category] == pytest.approx(expected, abs=1e-3), category
     mean = float(np.mean(list(measured.values())))
     assert mean == pytest.approx(PROTOTYPE_MEAN_AUROC, abs=1e-3)
+
+
+def test_rank_normalisation_destroys_the_distribution_shift_signal(tmp_path):
+    """The bug the corruption sweep exposed, pinned so it cannot come back.
+
+    A within-category rank is invariant to a shift of the whole category, which is
+    precisely the thing NormalManifoldDistance is meant to detect. The raw variant
+    must move when every image drifts away from the bank; the normalised one must
+    not.
+    """
+    from tzsad.uncertainty.image_side import NormalManifoldDistance, RawNormalManifoldDistance
+
+    rng = np.random.default_rng(0)
+    cache = EmbeddingCache(tmp_path)
+    dim, tag = 16, "M"
+    bank = l2_normalize(np.tile(np.eye(1, dim, 0).ravel(), (10, 1)).astype(np.float32)
+                        + rng.normal(0, 0.01, (10, dim)).astype(np.float32))
+    cache.save([f"a/train/{i}" for i in range(10)], bank, model_tag=tag, category="a",
+               split="train", kind="image", corruption="none", severity=0)
+
+    def shard(corruption, drift):
+        base = np.tile(np.eye(1, dim, 0).ravel(), (8, 1)).astype(np.float32)
+        base[:, 1] += drift                      # push every image off the manifold
+        cache.save([f"a/test/{i}" for i in range(8)], l2_normalize(base), model_tag=tag,
+                   category="a", split="test", kind="image", corruption=corruption, severity=1)
+
+    records = pd.DataFrame({"category": ["a"] * 8, "split": ["test"] * 8,
+                            "image_id": [f"a/test/{i}" for i in range(8)]})
+    means = {}
+    for corruption, drift in (("mild", 0.05), ("severe", 1.5)):
+        shard(corruption, drift)
+        means[corruption] = (
+            float(NormalManifoldDistance(cache, tag, k=3, corruption=corruption,
+                                         severity=1).compute(records).mean()),
+            float(RawNormalManifoldDistance(cache, tag, k=3, corruption=corruption,
+                                            severity=1).compute(records).mean()),
+        )
+    (norm_mild, raw_mild), (norm_severe, raw_severe) = means["mild"], means["severe"]
+    assert raw_severe > raw_mild * 2, (raw_mild, raw_severe)     # the raw scale reacts
+    assert norm_severe == pytest.approx(norm_mild)               # the rank does not
+
+
+def test_cache_tops_up_a_shard_built_from_a_subset(tmp_path):
+    """A shard cached from a subsampled index must not be reused for a full one.
+
+    The cache key records model/category/split/corruption but not *which* images
+    went in, so without a coverage check a subset shard is silently reused and
+    scoring later dies on a missing id.
+    """
+    from tzsad.features.clip_embedder import embed_index
+
+    cache = EmbeddingCache(tmp_path)
+    spec = BackboneSpec("Fake-B", "test")
+
+    class Counter:
+        """Minimal embedder that records how many images it was asked to encode."""
+
+        def __init__(self):
+            self.spec = spec
+            self.calls = []
+
+        def encode_images(self, paths, transform=None):
+            self.calls.append(len(paths))
+            return np.tile(np.arange(4, dtype=np.float32), (len(paths), 1))
+
+    index = pd.DataFrame({
+        "category": ["a"] * 5, "split": ["test"] * 5,
+        "path": [f"/x/{i}.png" for i in range(5)],
+        "image_id": [f"a/test/{i}" for i in range(5)],
+    })
+    emb = Counter()
+    embed_index(emb, index.iloc[:2], cache)          # subset first
+    assert emb.calls == [2]
+    assert not cache.covers(index.image_id.tolist(), model_tag=spec.cache_tag,
+                            category="a", split="test", kind="image",
+                            corruption="none", severity=0)
+
+    embed_index(emb, index, cache)                   # now the full index
+    assert emb.calls == [2, 3], "only the three missing images should be embedded"
+    ids, arr, _ = cache.load(model_tag=spec.cache_tag, category="a", split="test",
+                             kind="image", corruption="none", severity=0)
+    assert sorted(ids) == sorted(index.image_id)
+    assert arr.shape[0] == 5
+
+
+def _template_frame(n, shift=0.0, scale=1.0, seed=0):
+    rng = np.random.default_rng(seed)
+    df = pd.DataFrame({"category": ["a"] * n, "label": 0})
+    for t in range(5):
+        df[f"tplraw_{t:02d}"] = rng.normal(t * 0.1 + shift, 0.01 * scale, n)
+    return df
+
+
+def test_fitted_prompt_std_z_keeps_the_shift_signal_that_transductive_loses():
+    """The bug the corruption sweep exposed for the second time.
+
+    Standardising against the batch under evaluation divides the shift away: the
+    corrupted batch's own spread is the denominator. A fixed clean reference keeps
+    it visible.
+    """
+    from tzsad.uncertainty.image_side import NormalizedPromptEnsemble
+
+    clean = _template_frame(400, seed=1)
+    shifted = _template_frame(400, shift=0.5, scale=6.0, seed=2)   # drifted and noisier
+
+    fitted = NormalizedPromptEnsemble().fit(clean)
+    assert fitted.compute(shifted).mean() > 3 * fitted.compute(clean).mean()
+
+    untransductive = NormalizedPromptEnsemble()
+    flat = untransductive.compute(shifted).mean() / untransductive.compute(clean).mean()
+    assert flat < 1.5, "transductive z-scoring should have hidden the shift"
+
+
+def test_prompt_std_z_reference_must_be_normal_only():
+    from tzsad.uncertainty.image_side import NormalizedPromptEnsemble
+
+    ref = _template_frame(20)
+    ref.loc[0, "label"] = 1
+    with pytest.raises(ValueError, match="normal-only"):
+        NormalizedPromptEnsemble().fit(ref)
+
+
+def test_unfitted_prompt_std_z_warns(caplog):
+    from tzsad.uncertainty.image_side import NormalizedPromptEnsemble
+
+    with caplog.at_level("WARNING"):
+        NormalizedPromptEnsemble().compute(_template_frame(30))
+    assert any("unfitted" in r.message for r in caplog.records)

@@ -50,6 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--records", required=True, help="scored records (train + test splits)")
     ap.add_argument("--synthetic", default=None,
                     help="synthetic-anomaly records, to enable conformal prediction sets")
+    ap.add_argument("--all-backbones", action="store_true",
+                    help="score every configured backbone and TTA view, enabling "
+                         "the BackboneEnsemble and TTAVariance estimators")
     ap.add_argument("overrides", nargs="*")
     args = ap.parse_args(argv)
 
@@ -65,7 +68,20 @@ def main(argv: list[str] | None = None) -> int:
     test, calib, coverage = P.stage_calibrate(cfg, records)
     coverage.to_csv(run_dir / "coverage.csv", index=False)
     test = P.stage_uncertainty_modes(cfg, test)
-    test = P.stage_uncertainty_clip(cfg, test, {P.backbones_of(cfg)[0].cache_tag: records}, None)
+
+    per_backbone = {P.backbones_of(cfg)[0].cache_tag: records}
+    tta_frames = None
+    if args.all_backbones:
+        # Scoring extra backbones and TTA views is pure array work over cached
+        # embeddings, so enabling the last two estimators costs no forward pass.
+        embedders = P.stage_embed(cfg, index, splits=())      # loaders only, nothing to embed
+        per_backbone = P.stage_score_clip(cfg, index, embedders)
+        if cfg.uncertainty.tta.enabled:
+            tta_frames = P.stage_tta_scores(cfg, index, embedders)
+        log.info("scored %d backbones%s", len(per_backbone),
+                 f" + {len(tta_frames)} TTA views" if tta_frames else "")
+    normal_ref = records[(records["split"] == "train") & (records["label"] == 0)]
+    test = P.stage_uncertainty_clip(cfg, test, per_backbone, tta_frames, reference=normal_ref)
 
     if args.synthetic:
         synth = P.load_stage(Path(args.synthetic))

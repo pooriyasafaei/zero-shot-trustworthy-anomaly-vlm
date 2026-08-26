@@ -1,0 +1,13 @@
+# Cache the TTA views of the primary ViT-B/16 backbone for TTAVariance.
+defaults: [clip_full.yaml]
+paths: {run_name: tta_b16}
+data: {subset: full}
+clip:
+  backbones: [{name: ViT-B-16, pretrained: openai}]
+  batch_size: 64
+  windows: {enabled: false}
+uncertainty:
+  estimators: [prompt_std]
+  tta:
+    enabled: true
+    views: [hflip, vflip, crop90, crop80, jitter]
