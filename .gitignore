@@ -15,3 +15,7 @@ venv/
 
 # Notebooks
 .ipynb_checkpoints/
+
+# Local tooling: holds a Kaggle session token, and a throwaway venv.
+tools/kaggle_url.txt
+tools/.venv/

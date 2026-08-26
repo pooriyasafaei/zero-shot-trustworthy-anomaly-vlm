@@ -77,6 +77,21 @@ pytest                       # unit tests + smoke test, no GPU or weights requir
 Every run writes `manifest.json` (config, seed, git SHA, library versions, GPU names)
 and `run.log` into its results directory.
 
+## Monitoring a remote run
+
+GPU work runs on a remote session; `tools/watch` renders a live dashboard of GPU
+utilisation, per-job progress and ETAs from this machine:
+
+```bash
+tools/watch                 # live, refreshes every 20s
+tools/watch --once          # one snapshot
+tools/watch -n 60           # slower refresh
+tools/watch --logs qwen     # tail one job's log
+```
+
+Put the session proxy URL in `tools/kaggle_url.txt` (gitignored — it holds a
+session token). When the session expires, paste in the new URL.
+
 ## What was fixed relative to the prototype
 
 | # | Prototype defect | Fix |
