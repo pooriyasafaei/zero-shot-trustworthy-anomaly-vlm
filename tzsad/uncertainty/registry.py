@@ -6,13 +6,14 @@ from typing import Any, Callable
 from .base import UncertaintyEstimator
 from .image_side import (BackboneEnsemble, NormalManifoldDistance, NormalizedPromptEnsemble,
                          PromptEnsembleStd, TTAVariance)
+from .set_size import PredictionSetSize
 from .vlm_side import (AbstentionFlag, PromptPerturbationConsistency, SemanticEntropy,
                        TokenEntropy, VerbalizedConfidence, VerdictVariance)
 
 ESTIMATORS: dict[str, type[UncertaintyEstimator]] = {
     cls.name: cls for cls in (
         PromptEnsembleStd, NormalizedPromptEnsemble, BackboneEnsemble, TTAVariance,
-        NormalManifoldDistance, TokenEntropy, SemanticEntropy,
+        NormalManifoldDistance, PredictionSetSize, TokenEntropy, SemanticEntropy,
         PromptPerturbationConsistency, VerbalizedConfidence, VerdictVariance, AbstentionFlag,
     )
 }
