@@ -12,7 +12,9 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
-from .calibration.conformal import MondrianConformal, coverage_report, n_cal_sensitivity
+from .calibration.conformal import (BASELINE_UNCERTAINTY_MODES, MondrianConformal,
+                                    coverage_report, n_cal_sensitivity, pvalue_uncertainty)
+from .calibration.prediction_sets import ConformalPredictionSet, set_size_report
 from .data.mvtec import SubsetSpec, build_index
 from .features.cache import EmbeddingCache
 from .features.clip_embedder import BackboneSpec, ClipEmbedder, WindowSpec, embed_index
@@ -269,7 +271,8 @@ def stage_calibrate(cfg: DictConfig, records: pd.DataFrame, delta: float | None 
                               seed=int(cfg.seed)).fit(
         cal, score_col=score_col, n_cal=cfg.conformal.n_cal if cfg.conformal.n_cal else None)
     out = calib.transform(test, score_col=score_col,
-                          uncertainty_mode=str(cfg.conformal.uncertainty_mode))
+                          uncertainty_mode=str(cfg.conformal.uncertainty_mode),
+                          tau_u=float(cfg.conformal.get("tau_u", 1.0)))
     out["correct"] = (out["conformal_pred"].to_numpy() == out["label"].to_numpy())
     cov = coverage_report(out, calib, score_col=score_col, n_boot=int(cfg.eval.n_boot))
     return out, calib, cov
@@ -292,6 +295,63 @@ def stage_conformal_sweeps(cfg: DictConfig, records: pd.DataFrame, out_dir: Path
     cov.to_csv(paths["coverage_sweep"], index=False)
     ncal.to_csv(paths["n_cal"], index=False)
     return paths
+
+
+def stage_uncertainty_modes(cfg: DictConfig, test: pd.DataFrame) -> pd.DataFrame:
+    """Attach one ``u_conformal_<mode>`` column per configured p-value mode.
+
+    All four modes are recomputed from the cached ``conformal_p`` column, so the
+    whole mode bake-off costs nothing. The shipped ``u_conformal`` stays whatever
+    ``conformal.uncertainty_mode`` selects.
+    """
+    if "conformal_p" not in test:
+        raise KeyError("run stage_calibrate before stage_uncertainty_modes")
+    out = test.copy()
+    p = out["conformal_p"].to_numpy()
+    delta = float(cfg.conformal.delta)
+    tau_u = float(cfg.conformal.get("tau_u", 1.0))
+    for mode in cfg.conformal.get("uncertainty_modes", ["boundary"]):
+        out[f"u_conformal_{mode}"] = pvalue_uncertainty(p, str(mode), delta, tau_u)
+    return out
+
+
+def stage_prediction_sets(cfg: DictConfig, test: pd.DataFrame, normal_cal: pd.DataFrame,
+                          synthetic: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Fit two-sided conformal sets and attach ``set_size``/``u_set_size``.
+
+    ``synthetic`` must come from scripts/make_synthetic.py - real MVTec defects
+    must never calibrate the anomalous side.
+    """
+    delta = float(cfg.conformal.prediction_sets.get("delta", cfg.conformal.delta))
+    anomalous = synthetic[synthetic["synthetic_anomaly"] == 1]
+    cps = ConformalPredictionSet(delta=delta, seed=int(cfg.seed)).fit(normal_cal, anomalous)
+    out = cps.transform(test.reset_index(drop=True))
+    return out, set_size_report(out)
+
+
+def assign_bakeoff_split(records: pd.DataFrame, frac_select: float = 0.5, seed: int = 0,
+                         strata: tuple[str, ...] = ("category", "label")) -> pd.DataFrame:
+    """Split the test set into a ``select`` half and a ``report`` half.
+
+    Choosing the winning uncertainty signal and reporting its AURC on the *same*
+    images is selection bias: with eleven estimators and four p-value modes, the
+    best of fifteen looks better than it is. The winner is picked on ``select``
+    and the headline number is quoted from ``report``, which never informed the
+    choice. Stratified by category and label so both halves stay comparable.
+    """
+    out = records.copy()
+    rng = np.random.default_rng(seed)
+    half = np.empty(len(out), dtype=object)
+    present = [c for c in strata if c in out.columns]
+    for _, g in (out.groupby(list(present), sort=True) if present else [((), out)]):
+        idx = out.index.get_indexer(g.index)
+        order = rng.permutation(len(idx))
+        n_sel = int(round(frac_select * len(idx)))
+        marks = np.array(["report"] * len(idx), dtype=object)
+        marks[order[:n_sel]] = "select"
+        half[idx] = marks
+    out["bakeoff_half"] = half
+    return out
 
 
 def stage_uncertainty_clip(cfg: DictConfig, test_records: pd.DataFrame,

@@ -52,6 +52,14 @@ def evaluate_setting(cfg, index, embedders, corruption: str, severity: int) -> d
         row[f"mean_{col}"] = float(np.nanmean(test[col].to_numpy(dtype=float)))
         rc = risk_coverage_curve(test["correct"].to_numpy(), test[col].to_numpy(dtype=float))
         row[f"aurc_{col}"] = rc.aurc
+    # Prediction-set behaviour gets its own columns: the size-0 rate is the
+    # undecidable-gap indicator, and it is the one expected to climb with severity
+    # while a scalar confidence stays flat.
+    if "set_size" in test:
+        row["frac_set_size0"] = float((test.set_size == 0).mean())
+        row["frac_set_size1"] = float((test.set_size == 1).mean())
+        row["frac_set_size2"] = float((test.set_size == 2).mean())
+        row["mean_set_size"] = float(test.set_size.mean())
     return row
 
 
@@ -85,19 +93,23 @@ def main(argv: list[str] | None = None) -> int:
 
     # Does uncertainty rise monotonically with severity? The trustworthy question.
     signal_cols = [c.removeprefix("mean_") for c in sweep.columns if c.startswith("mean_u_")]
+    # The size-0 rate is tracked as its own row: no scalar function of a single
+    # one-sided p-value can express "both hypotheses rejected".
+    extra_cols = [c for c in ("frac_set_size0", "mean_set_size") if c in sweep.columns]
     mono_rows = []
     for corruption, g in sweep[sweep.corruption != "none"].groupby("corruption"):
         base = sweep[sweep.corruption == "none"].iloc[0]
-        for s in signal_cols:
+        for s in signal_cols + extra_cols:
+            key = f"mean_{s}" if s in signal_cols else s
             sev = np.concatenate([[0], g["severity"].to_numpy(dtype=float)])
-            val = np.concatenate([[base[f"mean_{s}"]], g[f"mean_{s}"].to_numpy(dtype=float)])
+            val = np.concatenate([[base[key]], g[key].to_numpy(dtype=float)])
             auroc = np.concatenate([[base["auroc"]], g["auroc"].to_numpy(dtype=float)])
             mono_rows.append({
                 "corruption": corruption, "signal": s,
                 "spearman_severity_vs_uncertainty": _spearman(sev, val),
                 "spearman_severity_vs_auroc": _spearman(sev, auroc),
                 "delta_auroc_at_s5": float(g["auroc"].iloc[-1] - base["auroc"]),
-                "delta_uncertainty_at_s5": float(g[f"mean_{s}"].iloc[-1] - base[f"mean_{s}"]),
+                "delta_uncertainty_at_s5": float(g[key].iloc[-1] - base[key]),
             })
     mono = pd.DataFrame(mono_rows)
     mono["silent_failure"] = (mono["spearman_severity_vs_uncertainty"] < 0.5) & \
