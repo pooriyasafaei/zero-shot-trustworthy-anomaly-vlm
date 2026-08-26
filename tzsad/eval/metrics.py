@@ -75,6 +75,12 @@ def expected_calibration_error(labels: np.ndarray, probs: np.ndarray, n_bins: in
     a narrow band, so most equal-width bins are empty and ECE silently reports the
     behaviour of two or three bins. Equal-mass bins put the same number of samples
     in each bin and give every region of the score range equal weight.
+
+    Note that when the model is miscalibrated *in the same direction in every bin*
+    - as zero-shot CLIP is on MVTec, where it under-predicts anomaly probability
+    throughout - the per-bin gaps all share a sign and ECE collapses to
+    ``|mean(label) - mean(prob)|`` for any binning. Identical adaptive and
+    equal-width values are therefore a signature of uniform bias, not a bug.
     """
     labels, probs = _finite_pairs(labels, probs)
     if labels.size == 0:

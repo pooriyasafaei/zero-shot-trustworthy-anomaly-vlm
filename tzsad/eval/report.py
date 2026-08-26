@@ -61,34 +61,87 @@ def calibration_table(records: pd.DataFrame, n_bins: int = 15,
 
 
 def error_prediction_table(records: pd.DataFrame, correct_col: str, n_boot: int = 1000,
-                           seed: int = 0, group_col: str = "category") -> pd.DataFrame:
+                           seed: int = 0, group_col: str = "category",
+                           prediction_col: str = "conformal_pred") -> pd.DataFrame:
     """**The headline table**: AUROC of each uncertainty signal for predicting error.
 
     A signal at 0.5 carries no information about whether the prediction is wrong.
     Below 0.5 means it is actively misleading - the system is more confident when
     it is wrong, which is the silent-failure signature.
+
+    Two controls are built in, because the naive version of this test reports an
+    artefact as a result:
+
+    **Score-monotone baselines.** When one error type dominates - on MVTec at
+    delta=0.05 the errors are ~95% false negatives - "is this an error" collapses
+    into "is this anomalous and scored low", so *any* signal monotone in the
+    anomaly score scores well for free. The ``BASELINE:score`` and
+    ``BASELINE:1-score`` rows measure exactly that free signal, and
+    ``excess_over_baseline`` reports how much each estimator adds over it. A
+    signal whose excess is at or below zero has told us nothing the score did not.
+
+    **Conditioning on the decision.** Rows with scope ``pred=0`` / ``pred=1``
+    repeat the test within each decision group, where the errors are homogeneous
+    (all false negatives, or all false positives). This removes the base-rate
+    shortcut entirely and is the number to quote when the class balance is skewed.
     """
     signals = uncertainty_columns(records)
     if not signals:
         raise ValueError("no u_* uncertainty columns present; run the uncertainty stage first")
     correct = records[correct_col].to_numpy(dtype=bool)
+    wrong = (~correct).astype(int)
+
+    baselines: dict[str, np.ndarray] = {}
+    if "anomaly_score" in records:
+        score = records["anomaly_score"].to_numpy(dtype=float)
+        baselines = {"BASELINE:score": score, "BASELINE:1-score": -score}
+    baseline_level = max(
+        (safe_auroc(wrong, v) for v in baselines.values() if np.isfinite(safe_auroc(wrong, v))),
+        default=0.5,
+    )
+
     rows = []
-    for signal in signals:
-        u = records[signal].to_numpy(dtype=float)
-        pooled = bootstrap_metric((~correct).astype(int), u, safe_auroc, n_boot, seed=seed)
-        row = {"signal": signal, "scope": "POOLED", "n": len(records),
-               "n_errors": int((~correct).sum()), "err_auroc": pooled.value,
-               "ci_lo": pooled.lo, "ci_hi": pooled.hi,
-               "informative": bool(pooled.lo > 0.5), "misleading": bool(pooled.hi < 0.5)}
-        rows.append(row)
+    for name, values in list(baselines.items()) + [(s, records[s].to_numpy(dtype=float)) for s in signals]:
+        is_baseline = name.startswith("BASELINE:")
+        pooled = bootstrap_metric(wrong, values, safe_auroc, n_boot, seed=seed)
+        rows.append({
+            "signal": name, "scope": "POOLED", "n": len(records),
+            "n_errors": int(wrong.sum()), "err_auroc": pooled.value,
+            "ci_lo": pooled.lo, "ci_hi": pooled.hi,
+            "informative": bool(pooled.lo > 0.5), "misleading": bool(pooled.hi < 0.5),
+            "excess_over_baseline": np.nan if is_baseline else pooled.value - baseline_level,
+            "beats_baseline": False if is_baseline else bool(pooled.lo > baseline_level),
+        })
+
+        # Conditioned on the decision: errors within a group are all of one type.
+        if prediction_col in records:
+            for pred_value, sub in records.groupby(prediction_col, sort=True):
+                m = records.index.get_indexer(sub.index)
+                w = wrong[m]
+                if len(np.unique(w)) < 2:
+                    continue
+                v = bootstrap_metric(w, values[m], safe_auroc, n_boot, seed=seed)
+                rows.append({
+                    "signal": name, "scope": f"pred={int(pred_value)}", "n": len(sub),
+                    "n_errors": int(w.sum()), "err_auroc": v.value, "ci_lo": v.lo, "ci_hi": v.hi,
+                    "informative": bool(v.lo > 0.5), "misleading": bool(v.hi < 0.5),
+                    "excess_over_baseline": np.nan, "beats_baseline": False,
+                })
+
+        if is_baseline:
+            continue
         for group, g in records.groupby(group_col, sort=True):
-            c = g[correct_col].to_numpy(dtype=bool)
-            v = bootstrap_metric((~c).astype(int), g[signal].to_numpy(dtype=float),
-                                 safe_auroc, max(n_boot // 5, 200), seed=seed)
-            rows.append({"signal": signal, "scope": str(group), "n": len(g),
-                         "n_errors": int((~c).sum()), "err_auroc": v.value,
-                         "ci_lo": v.lo, "ci_hi": v.hi,
-                         "informative": bool(v.lo > 0.5), "misleading": bool(v.hi < 0.5)})
+            m = records.index.get_indexer(g.index)
+            w = wrong[m]
+            if len(np.unique(w)) < 2:
+                continue
+            v = bootstrap_metric(w, values[m], safe_auroc, max(n_boot // 5, 200), seed=seed)
+            rows.append({
+                "signal": name, "scope": str(group), "n": len(g), "n_errors": int(w.sum()),
+                "err_auroc": v.value, "ci_lo": v.lo, "ci_hi": v.hi,
+                "informative": bool(v.lo > 0.5), "misleading": bool(v.hi < 0.5),
+                "excess_over_baseline": np.nan, "beats_baseline": False,
+            })
     return pd.DataFrame(rows)
 
 

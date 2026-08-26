@@ -215,6 +215,16 @@ class NormalManifoldDistance(UncertaintyEstimator):
     A defect that is *semantically* wrong but *visually* typical (a mislabelled
     but in-distribution part) leaves this signal flat; and it is a PatchCore-lite,
     so it inherits PatchCore's sensitivity to bank size and to category alignment.
+
+    **Its sign depends on the decision.** Measured on MVTec (ViT-B/16, delta=0.05)
+    it reaches 0.824 error-prediction AUROC among images predicted *normal* - it
+    is the strongest signal in the suite for catching a missed anomaly - but 0.145
+    among images predicted *anomalous*, i.e. strongly anti-correlated there. That
+    is coherent rather than broken: the quantity being measured is "how unlike the
+    normal manifold is this", so a flagged image that is far from the manifold is
+    probably a *correct* detection. It behaves as a second anomaly detector, not as
+    a symmetric uncertainty. Fusing it as if it were symmetric will cancel these
+    two regimes out; condition on the predicted class, or use it one-sided.
     """
 
     name = "manifold_knn"
