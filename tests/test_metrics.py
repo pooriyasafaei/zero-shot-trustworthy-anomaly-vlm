@@ -156,3 +156,60 @@ def test_pro_weights_regions_equally():
     both = found_big_only.copy()
     both[28:30, 28:30] = 1.0
     assert pro_score({"i": both}, {"i": mask}) > pro_score({"i": found_big_only}, {"i": mask})
+
+
+def _imbalanced_errors(n=1200, seed=0):
+    """A frame where errors are almost all false negatives, as at a conservative delta.
+
+    This reproduces the base-rate trap: 'is this an error' becomes nearly the same
+    question as 'is this a low-scoring anomaly', so a signal monotone in the score
+    predicts error for free without carrying any uncertainty information.
+    """
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    label = (rng.random(n) < 0.73).astype(int)    # MVTec test sets are anomaly-heavy
+    score = np.clip(0.40 + 0.28 * label + rng.normal(0, 0.14, n), 0.01, 0.99)
+    pred = (score > 0.62).astype(int)             # a delta=0.05-like conservative threshold
+    return pd.DataFrame({
+        "category": rng.choice(list("abc"), n), "label": label, "anomaly_score": score,
+        "conformal_pred": pred, "correct": pred == label, "parse_ok": True,
+        "u_score_monotone": 1.0 - score,          # carries only what the score carries
+        "u_pure_noise": rng.random(n),
+    })
+
+
+def test_error_prediction_exposes_the_score_monotone_artifact():
+    """A signal that is only a re-encoding of the score must not read as informative."""
+    from tzsad.eval.report import error_prediction_table
+
+    df = _imbalanced_errors()
+    tbl = error_prediction_table(df, "correct", n_boot=300)
+    pooled = tbl[tbl.scope == "POOLED"].set_index("signal")
+
+    assert {"BASELINE:score", "BASELINE:1-score"} <= set(pooled.index)
+    # The artifact is real: the score alone predicts error well above chance.
+    assert pooled.loc["BASELINE:1-score", "err_auroc"] > 0.6
+    # A signal that merely re-encodes the score does not beat that baseline.
+    assert pooled.loc["u_score_monotone", "excess_over_baseline"] <= 0.01
+    assert not bool(pooled.loc["u_score_monotone", "beats_baseline"])
+
+
+def test_conditioning_on_the_decision_removes_the_base_rate_shortcut():
+    """Within one decision group the errors are homogeneous, so the shortcut is gone."""
+    from tzsad.eval.report import error_prediction_table
+
+    df = _imbalanced_errors()
+    tbl = error_prediction_table(df, "correct", n_boot=300)
+    mono = tbl[tbl.signal == "u_score_monotone"].set_index("scope")
+    assert "pred=0" in mono.index
+    # Pooled it looks strong; conditioned on the decision it is far weaker.
+    assert mono.loc["pred=0", "err_auroc"] < mono.loc["POOLED", "err_auroc"] - 0.1
+
+
+def test_pure_noise_is_never_reported_as_informative():
+    from tzsad.eval.report import error_prediction_table
+
+    tbl = error_prediction_table(_imbalanced_errors(), "correct", n_boot=300)
+    noise = tbl[(tbl.signal == "u_pure_noise") & (tbl.scope == "POOLED")].iloc[0]
+    assert not noise.informative and not noise.beats_baseline

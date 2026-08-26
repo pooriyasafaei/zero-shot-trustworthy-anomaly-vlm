@@ -142,3 +142,103 @@ def test_pvalue_uncertainty_peaks_where_documented(mode, peak):
     u = pvalue_uncertainty(grid, mode, delta=0.05)
     assert abs(float(grid[int(np.argmax(u))]) - peak) < 0.02
     assert u.min() >= 0.0
+
+
+def test_log_mode_peaks_at_the_boundary_and_is_bounded():
+    grid = np.geomspace(1e-4, 1 - 1e-6, 4000)
+    u = pvalue_uncertainty(grid, "log", delta=0.05, tau_u=1.0)
+    assert abs(float(grid[int(np.argmax(u))]) - 0.05) < 0.005
+    assert u.min() >= 0.0 and u.max() <= 1.0 + 1e-12
+
+
+def test_log_mode_is_scale_free_in_p():
+    """The defining property: equal *ratios* of p give equal ratios of u.
+
+    p is uniform under the null, so all the discriminative action sits in the tail
+    near 0. A log-scaled mode treats p=1e-4 vs 1e-3 the same way it treats 1e-3 vs
+    1e-2; a piecewise-linear rescaling collapses both into a vanishing difference.
+    """
+    p = np.array([1e-5, 1e-4, 1e-3, 1e-2])
+    u = pvalue_uncertainty(p, "log", delta=0.05, tau_u=1.0)
+    ratios = u[1:] / u[:-1]
+    assert np.allclose(ratios, ratios[0])
+
+
+def test_log_mode_tau_u_controls_tail_resolution():
+    """tau_u > 1 keeps the deep tail distinguishable instead of crushing it to zero."""
+    p = np.array([1e-5, 1e-4, 1e-3])
+    sharp = pvalue_uncertainty(p, "log", delta=0.05, tau_u=1.0)
+    wide = pvalue_uncertainty(p, "log", delta=0.05, tau_u=2.0)
+    assert (wide > sharp).all()
+    assert np.diff(wide).min() > np.diff(sharp).min()
+
+
+def test_log_and_boundary_agree_below_delta_at_tau_one():
+    """Documents that tau_u=1 reduces to the boundary rescaling on the lower side.
+
+    Both give u = p/delta there, so tau_u is the only thing that makes 'log' a
+    distinct arm rather than a duplicate of 'boundary'.
+    """
+    p = np.array([1e-4, 1e-3, 1e-2, 0.04])
+    assert np.allclose(pvalue_uncertainty(p, "log", 0.05, tau_u=1.0),
+                       pvalue_uncertainty(p, "boundary", 0.05))
+
+
+def test_tau_u_must_be_positive():
+    with pytest.raises(ValueError, match="tau_u"):
+        pvalue_uncertainty(np.array([0.1]), "log", tau_u=0.0)
+
+
+def test_default_uncertainty_mode_is_not_a_baseline():
+    """The shipped default must never be a mode we diagnosed as peaking wrongly."""
+    import inspect
+
+    from tzsad.calibration.conformal import BASELINE_UNCERTAINTY_MODES, MondrianConformal
+
+    default = inspect.signature(pvalue_uncertainty).parameters["mode"].default
+    assert default not in BASELINE_UNCERTAINTY_MODES
+    assert inspect.signature(MondrianConformal.transform).parameters[
+        "uncertainty_mode"].default not in BASELINE_UNCERTAINTY_MODES
+
+
+def test_shipped_config_default_is_not_a_baseline_mode():
+    from omegaconf import OmegaConf
+
+    from tzsad.calibration.conformal import BASELINE_UNCERTAINTY_MODES
+    from tzsad.utils.config import CONFIG_ROOT
+
+    cfg = OmegaConf.load(CONFIG_ROOT / "base.yaml")
+    assert str(cfg.conformal.uncertainty_mode) not in BASELINE_UNCERTAINTY_MODES
+
+
+def test_calibration_coverage_sd_matches_the_beta_law():
+    from scipy import stats
+
+    from tzsad.calibration.conformal import calibration_coverage_sd
+
+    # n=200, delta=0.10 -> rank 181 -> Beta(181, 20)
+    assert calibration_coverage_sd(200, 0.10) == pytest.approx(stats.beta(181, 20).std(), rel=1e-9)
+    assert calibration_coverage_sd(200, 0.10) == pytest.approx(0.0211, abs=5e-4)
+    assert calibration_coverage_sd(200, 0.05) == pytest.approx(0.0153, abs=5e-4)
+    assert np.isnan(calibration_coverage_sd(40, 0.01))      # threshold is +inf there
+
+
+def test_coverage_report_ci_separates_the_two_noise_terms():
+    rng = np.random.default_rng(0)
+    cal = pd.DataFrame({"category": ["a"] * 200, "anomaly_score": rng.normal(size=200), "label": 0})
+    calib = MondrianConformal(delta=0.1, seed=0).fit(cal)
+    test = pd.DataFrame({"category": ["a"] * 20, "anomaly_score": rng.normal(size=20), "label": 0})
+    cov = coverage_report(test, calib, n_boot=300)
+    row = cov.iloc[0]
+    assert row.calib_sd == pytest.approx(0.0211, abs=5e-4)
+    # The total interval is wider than the test-only bootstrap interval.
+    assert row.ci_hi_total - row.ci_lo_total > row.ci_hi - row.ci_lo
+
+
+def test_pvalues_reject_a_duplicated_index():
+    rng = np.random.default_rng(0)
+    cal = pd.DataFrame({"category": ["a"] * 50, "anomaly_score": rng.normal(size=50), "label": 0})
+    calib = MondrianConformal().fit(cal)
+    dup = pd.DataFrame({"category": ["a", "a"], "anomaly_score": [0.1, 0.2]}, index=[0, 0])
+    with pytest.raises(ValueError, match="not unique"):
+        calib.pvalues(dup)

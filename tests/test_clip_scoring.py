@@ -1,6 +1,8 @@
 """CLIP scoring maths and the cache, with a stubbed backbone (no weights needed)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -9,7 +11,8 @@ from tzsad.features.cache import EmbeddingCache, l2_normalize
 from tzsad.features.clip_embedder import BackboneSpec, WindowSpec
 from tzsad.features.heatmap import bank_maps, paint
 from tzsad.scorers.base import ScoringContext
-from tzsad.scorers.clip_scorer import ClipScorer, ClipScorerConfig, softmax_anomaly_probability
+from tzsad.scorers.clip_scorer import (ClipScorer, ClipScorerConfig, softmax_anomaly_probability,
+                                       template_columns)
 from tzsad.scorers.prompts import class_name_for, get_prompt_set
 
 
@@ -145,3 +148,55 @@ def test_manifold_distance_looks_up_the_right_shard_per_split(tmp_path):
     assert u.notna().all()
     # Train images are in the bank, so they sit closer to it than the test images.
     assert u[:6].mean() < u[6:].mean()
+
+
+# Prototype reference numbers, measured on the full MVTec-AD test set with
+# OpenCLIP ViT-B/16 (openai), the 5+5 base prompt set, and the prototype's own
+# score: the mean over templates of (cos_anomaly - cos_normal). The colleague's
+# notebook reported 0.8228 mean AUROC; this rewrite reproduces 0.8227.
+#
+# These are pinned so that any future refactor that changes the scoring semantics
+# fails loudly instead of drifting.
+PROTOTYPE_AUROC = {
+    "bottle": 0.9198, "cable": 0.7116, "capsule": 0.6598, "carpet": 0.8864,
+    "grid": 0.9449, "hazelnut": 0.8114, "leather": 0.9949, "metal_nut": 0.8915,
+    "pill": 0.6803, "screw": 0.5989, "tile": 0.9859, "toothbrush": 0.8167,
+    "transistor": 0.7100, "wood": 0.9781, "zipper": 0.7508,
+}
+PROTOTYPE_MEAN_AUROC = 0.8227
+
+
+def test_prototype_reference_numbers_are_self_consistent():
+    """The pinned per-category values must average to the pinned mean."""
+    mean = sum(PROTOTYPE_AUROC.values()) / len(PROTOTYPE_AUROC)
+    assert len(PROTOTYPE_AUROC) == 15
+    assert mean == pytest.approx(PROTOTYPE_MEAN_AUROC, abs=5e-4)
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parents[1] / "results/clip_full/records_clip.parquet").exists(),
+    reason="needs a full clip_full scoring run",
+)
+def test_reproduces_the_prototype_auroc_from_cached_records():
+    """Regression test against the prototype, recomputed offline from records.
+
+    The per-template raw columns hold (cos_anomaly - cos_normal) for each template,
+    so their row mean *is* the prototype's score. No GPU pass is involved, which is
+    the decoupling rule doing its job.
+    """
+    from tzsad.eval.metrics import safe_auroc
+
+    path = Path(__file__).resolve().parents[1] / "results/clip_full/records_clip.parquet"
+    df = pd.read_parquet(path)
+    test = df[df["split"] == "test"]
+    raw_cols = template_columns(test, raw=True)
+    assert len(raw_cols) == 5, "the base prompt set has five template pairs"
+    proto = test[raw_cols].to_numpy().mean(axis=1)
+    test = test.assign(proto=proto)
+
+    measured = {c: safe_auroc(g.label, g.proto) for c, g in test.groupby("category")}
+    assert set(measured) == set(PROTOTYPE_AUROC)
+    for category, expected in PROTOTYPE_AUROC.items():
+        assert measured[category] == pytest.approx(expected, abs=1e-3), category
+    mean = float(np.mean(list(measured.values())))
+    assert mean == pytest.approx(PROTOTYPE_MEAN_AUROC, abs=1e-3)

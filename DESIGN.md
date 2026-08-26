@@ -97,6 +97,35 @@ after that is CPU-only. The Qwen branch is the expensive one — see risks.
 **I agree with all nine diagnosed defects in §2.** Two of them I would state more
 strongly, and I disagree with three implementation choices in §4.
 
+### 3.0 Conformal prediction sets (added after review)
+
+A one-sided p-value answers only "does this conform to normal?". `calibration/
+prediction_sets.py` calibrates a second pool on **synthetic** anomalies
+(CutPaste/NSA over `train/good`) and emits `{y : p_y > δ}`, exposing set size as a
+registered estimator:
+
+| size | meaning |
+|---|---|
+| 1 | committed — exactly one label survives |
+| 2 | ambiguous — both survive |
+| 0 | **both rejected** — the undecidable gap |
+
+Size 0 is the reason this exists: no scalar function of one one-sided p-value can
+express it, and it should climb under corruption. It gets its own row in the
+corruption monotonicity table.
+
+Two caveats, both stated in the docstrings and both required in the paper:
+
+* the anomalous side is calibrated on **synthetic** defects, so set behaviour on
+  real anomalies is a *diagnostic*, never a coverage guarantee on that class;
+* both nonconformity measures are one-sided in the same scalar score, so size 0
+  fires in the **gap between the pools**, not on arbitrary OOD. An input scoring
+  more extremely than every calibration point in the conforming direction gets
+  `p = 1` there by construction and yields a confident singleton. Report size 0 as
+  "fell into the undecidable gap", not "detected OOD"; catching the latter needs a
+  nonconformity measure with an independent view of the input, i.e. the
+  normal-manifold kNN distance.
+
 ### 3.1 `u = 1 − 2|p − 0.5|` peaks in the wrong place (§4.2)
 
 The brief derives uncertainty from the conformal p-value as `1 − 2|p − 0.5|`,
@@ -106,11 +135,19 @@ confident "normal" call in the dataset. The decision boundary is at `p = δ`.
 As specified, the signal is maximal where the model is most certain and low
 (`u ≈ 2δ`) exactly at the boundary where errors concentrate.
 
-**Implemented:** `pvalue_uncertainty(..., mode=...)` with `symmetric` (the brief's
-form, default for comparability), `entropy`, and `boundary` — which maps `δ → 0.5`
-before applying the same rule, so the peak sits at the decision boundary. The
-three are compared head-to-head in the bake-off; `configs/base.yaml:
-conformal.uncertainty_mode` selects one.
+**Implemented:** `pvalue_uncertainty(..., mode=...)` with four arms — `boundary`
+(**the default**), `log`, `symmetric` and `entropy`. `boundary` maps `δ → 0.5`
+before applying the brief's rule; `log` uses `exp(-|log(p/δ)|/τ_u)`, which is
+scale-free in `p` and so keeps the deep tail resolvable where a piecewise-linear
+rescaling crushes it (at `τ_u = 1` the two coincide below `δ`, so `τ_u` is what
+makes `log` a distinct arm).
+
+`symmetric` and `entropy` are **bake-off arms only**. They are collected in
+`BASELINE_UNCERTAINTY_MODES` and a test asserts that neither the function default,
+the `MondrianConformal.transform` default, nor `configs/base.yaml` selects one.
+This matters beyond tidiness: the fusion stage consumes `u_conformal`, so shipping
+a baseline-grade signal as the default would have manufactured the Risk 1 outcome
+("nothing predicts error well") regardless of whether it was true.
 
 ### 3.2 `PromptEnsembleStd` fails for a second reason the brief does not name (§4.3)
 
@@ -126,6 +163,21 @@ removes per-template offset and gain, not the score-magnitude coupling.
 result is worth having — but I would not budget hope for it. `prompt_std` is
 computed on the *raw* margins by default in the z-scored variant, which sidesteps
 the softmax coupling.
+
+### 3.2b Measured: the error-prediction test needs two controls
+
+Running the headline table on the full 15-category run showed that the naive
+version reports an **artifact**. At δ=0.05 the errors are 613 false negatives vs
+32 false positives, so "is this an error" collapses into "is this a low-scoring
+anomaly" and any signal monotone in the score scores well for free: the raw score
+alone reaches 0.662, and `u_conformal` pooled reached 0.760 on the strength of it.
+
+`error_prediction_table` therefore now ships two controls: explicit
+`BASELINE:score` / `BASELINE:1-score` rows with an `excess_over_baseline` column,
+and `pred=0` / `pred=1` scopes that repeat the test within a decision group where
+the errors are homogeneous. `scripts/run_bakeoff.py` adds a third — the winning
+signal is selected on one half of the test set and quoted from the other, because
+the best of fifteen candidates looks better than it is at its selection optimum.
 
 ### 3.3 `TTAVariance` is the estimator I would cut first (§4.3)
 
@@ -220,10 +272,17 @@ So a category showing 0.83 coverage against a nominal 0.95 may be a real
 exchangeability violation or may be one unlucky calibration draw, and the
 difference matters for what we claim.
 
-*De-risking.* (a) `coverage_report` reports per-category coverage **with bootstrap
-CIs**, never as a point estimate. (b) `n_cal_sensitivity` repeats the calibration
-draw and reports the spread, separating calibration-set randomness from a genuine
-violation. (c) The δ sweep gives four independent checks of the same guarantee —
+*De-risking.* (a) `coverage_report` reports per-category coverage **with intervals**,
+never as a point estimate — but be precise about which noise term each column
+covers. `ci_lo`/`ci_hi` bootstrap the **test images only**, so they answer "would
+this calibration set cover correctly on a fresh test set". The **calibration-draw**
+term is reported separately as `calib_sd` (the sd of `Beta(k, n+1-k)`, ≈0.021 at
+n=200/δ=0.10 and ≈0.015 at δ=0.05) and folded into `ci_lo_total`/`ci_hi_total`.
+On MVTec the test term dominates — bottle has 20 normal test images, sd ≈0.049 vs
+0.015 — so including it widens intervals by only ~5%, but quoting `ci_lo`/`ci_hi`
+alone understates the uncertainty in the *method*. (b) `n_cal_sensitivity` repeats
+the calibration draw and reports the spread, separating calibration-set randomness
+from a genuine violation. (c) The δ sweep gives four independent checks of the same guarantee —
 a real violation degrades coverage at every δ, an unlucky draw does not. (d) The
 cross-dataset arm (calibrate on MVTec, test on VisA/BTAD) is designed to show
 coverage breaking on purpose, which validates that the diagnostic has teeth.
