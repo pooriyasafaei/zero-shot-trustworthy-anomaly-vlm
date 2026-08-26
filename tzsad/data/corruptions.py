@@ -10,6 +10,7 @@ for a monotone-degradation study; they are not bit-identical to that reference.
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Callable
 
 import numpy as np
@@ -118,13 +119,46 @@ _REGISTRY: dict[str, Callable[[Image.Image, int, np.random.Generator], Image.Ima
 }
 
 
-def apply_corruption(img: Image.Image, name: str, severity: int, seed: int = 0) -> Image.Image:
-    """Apply a named corruption at severity 1-5. ``name='none'`` is the identity."""
+#: Corruptions are applied at this resolution before being handed to the backbone.
+#: Hendrycks & Dietterich calibrate their severity constants on ~224px images, so a
+#: defocus radius of 3px means something quite different on a 1024x1024 MVTec image -
+#: it is a far milder corruption there. Normalising the working resolution keeps the
+#: severity ladder meaningful *and* costs ~16x less CPU, which matters because the
+#: sweep applies 35 corruption settings to every test image.
+DEFAULT_WORKING_SIZE = 256
+
+
+def apply_corruption(img: Image.Image, name: str, severity: int, seed: int = 0,
+                     working_size: int | None = DEFAULT_WORKING_SIZE) -> Image.Image:
+    """Apply a named corruption at severity 1-5. ``name='none'`` is the identity.
+
+    ``working_size`` resizes the image before corrupting so that the severity
+    constants mean what they mean in ImageNet-C. Pass ``None`` to corrupt at native
+    resolution (slower, and the effective severity then depends on image size).
+    Nothing is lost for a CLIP backbone, which resizes to 224 regardless.
+    """
     if name in ("none", "", None):
         return img.convert("RGB")
     if name not in _REGISTRY:
         raise KeyError(f"unknown corruption {name!r}; available: {sorted(_REGISTRY)}")
     if severity not in SEVERITIES:
         raise ValueError(f"severity must be in {SEVERITIES}, got {severity}")
-    rng = np.random.default_rng(abs(hash((name, severity, seed))) % (2**32))
-    return _REGISTRY[name](img.convert("RGB"), severity, rng)
+    rng = np.random.default_rng(_stable_seed(name, severity, seed))
+    img = img.convert("RGB")
+    if working_size is not None and max(img.size) > working_size:
+        img = img.resize((working_size, working_size), Image.BICUBIC)
+    return _REGISTRY[name](img, severity, rng)
+
+
+def _stable_seed(name: str, severity: int, seed: int) -> int:
+    """Deterministic seed from the corruption key, stable across processes.
+
+    Python's built-in ``hash()`` is randomised per interpreter for str inputs
+    unless ``PYTHONHASHSEED`` is set *before* the process starts, so using it here
+    meant every run of the corruption sweep drew different noise - the numbers
+    could never be reproduced from the manifest. ``seed_everything`` sets
+    ``PYTHONHASHSEED`` in ``os.environ``, but that cannot affect the interpreter
+    already running. A content hash has no such dependency.
+    """
+    key = f"{name}|{severity}|{seed}".encode()
+    return int.from_bytes(hashlib.sha256(key).digest()[:8], "big") % (2**32)

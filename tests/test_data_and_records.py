@@ -119,3 +119,65 @@ def test_cal_subset_defaults_to_keeping_everything(fake_mvtec):
     a = build_index(fake_mvtec)
     b = build_index(fake_mvtec, cal_subset=SubsetSpec.parse("full"))
     pd.testing.assert_frame_equal(a, b)
+
+
+def test_corruption_is_applied_at_a_normalised_working_resolution():
+    """Severity constants are calibrated for ~224px; a fixed radius on a 1024px
+    image is a much milder corruption, so the working size is normalised."""
+    from tzsad.data.corruptions import DEFAULT_WORKING_SIZE
+
+    rng = np.random.default_rng(0)
+    big = Image.fromarray(rng.integers(60, 200, (1024, 1024, 3), dtype=np.uint8))
+    out = apply_corruption(big, "defocus_blur", 3)
+    assert out.size == (DEFAULT_WORKING_SIZE, DEFAULT_WORKING_SIZE)
+
+    native = apply_corruption(big, "defocus_blur", 3, working_size=None)
+    assert native.size == (1024, 1024)
+
+
+def test_severity_stays_monotone_at_the_normalised_resolution():
+    rng = np.random.default_rng(3)
+    big = Image.fromarray(rng.integers(60, 200, (512, 512, 3), dtype=np.uint8))
+    ref = np.asarray(apply_corruption(big, "none", 1).resize((256, 256)), dtype=float)
+    deltas = [np.abs(np.asarray(apply_corruption(big, "defocus_blur", s), float) - ref).mean()
+              for s in (1, 3, 5)]
+    assert deltas[0] < deltas[1] < deltas[2]
+
+
+def test_small_images_are_not_upscaled():
+    """Only downscaling happens: a 64px image must not be blown up to 256."""
+    rng = np.random.default_rng(1)
+    small = Image.fromarray(rng.integers(0, 255, (64, 64, 3), dtype=np.uint8))
+    assert apply_corruption(small, "gaussian_noise", 2).size == (64, 64)
+
+
+def test_corruption_seed_is_stable_across_processes():
+    """Built-in hash() is randomised per interpreter, so it cannot seed anything
+    whose value has to be reproducible from a manifest months later."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    code = (
+        "import sys; sys.path.insert(0, %r);"
+        "import numpy as np; from PIL import Image;"
+        "from tzsad.data.corruptions import apply_corruption;"
+        "img = Image.fromarray(np.full((32, 32, 3), 128, dtype=np.uint8));"
+        "print(int(np.asarray(apply_corruption(img, 'gaussian_noise', 4, seed=1))"
+        ".astype(np.int64).sum()))" % str(root)
+    )
+    outs = {subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, check=True).stdout.strip() for _ in range(3)}
+    assert len(outs) == 1, f"corruption differs between processes: {outs}"
+
+
+def test_stable_seed_depends_on_every_component_of_the_key():
+    from tzsad.data.corruptions import _stable_seed
+
+    base = _stable_seed("gaussian_noise", 3, 0)
+    assert base == _stable_seed("gaussian_noise", 3, 0)
+    assert base != _stable_seed("defocus_blur", 3, 0)
+    assert base != _stable_seed("gaussian_noise", 4, 0)
+    assert base != _stable_seed("gaussian_noise", 3, 1)
+    assert 0 <= base < 2**32
