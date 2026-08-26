@@ -15,8 +15,12 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
+from ..calibration.conformal import BASELINE_UNCERTAINTY_MODES
 from ..eval.selective import risk_coverage_curve
 from ..uncertainty.base import rank_normalize
+from ..utils.logging import get_logger
+
+log = get_logger("fusion.trust")
 
 
 @dataclass
@@ -28,10 +32,40 @@ class FusionConfig:
     halluc_col: str = "halluc"
     group_col: str = "category"
     weights: dict[str, float] = field(default_factory=dict)
+    allow_baseline_signals: bool = False
+
+
+def assert_no_baseline_signals(records: pd.DataFrame, config: FusionConfig) -> None:
+    """Refuse to fuse a signal we have diagnosed as baseline-grade.
+
+    ``u_conformal`` is only as good as the p-value mode that produced it. The
+    ``symmetric`` and ``entropy`` modes peak at ``p = 0.5``, the median of the
+    *normal* calibration distribution, rather than at the decision boundary
+    ``p = delta``. Fusing one of those produces a trust score that looks
+    uninformative no matter how good the other factors are - which would
+    manufacture the "nothing predicts error" result rather than measure it.
+
+    Raises unless ``config.allow_baseline_signals`` is set, which exists only so
+    the ablation can deliberately quantify the damage.
+    """
+    mode = records["conformal_mode"].iloc[0] if "conformal_mode" in records and len(records) else None
+    if mode is None or "u_conformal" not in config.uncertainty_cols:
+        return
+    if str(mode) in BASELINE_UNCERTAINTY_MODES and not config.allow_baseline_signals:
+        raise ValueError(
+            f"refusing to fuse u_conformal computed with the baseline-grade mode {mode!r}: "
+            f"it peaks at p=0.5 (a typical normal image), not at the decision boundary. "
+            f"Set conformal.uncertainty_mode to 'boundary' or 'log', or pass "
+            f"allow_baseline_signals=True to measure the damage on purpose."
+        )
+    if str(mode) in BASELINE_UNCERTAINTY_MODES:
+        log.warning("fusing a baseline-grade u_conformal (mode=%s) because "
+                    "allow_baseline_signals is set", mode)
 
 
 def _factors(records: pd.DataFrame, config: FusionConfig, use: Sequence[str]) -> dict[str, np.ndarray]:
     """Assemble the trust *factors* (higher = more trustworthy) named in ``use``."""
+    assert_no_baseline_signals(records, config)
     out: dict[str, np.ndarray] = {}
     for col in config.uncertainty_cols:
         if col in use and col in records:

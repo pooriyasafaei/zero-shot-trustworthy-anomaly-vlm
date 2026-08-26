@@ -221,3 +221,35 @@ def test_report_declares_every_signal_it_scores():
     assert set(decl.signal) == {"u_prompt_std", "u_manifold_knn", "u_conformal"}
     assert decl.failure_modes.str.len().gt(20).all()
     assert bool(decl.set_index("signal").loc["u_prompt_std", "is_baseline"]) is True
+
+
+def _fusion_records(mode: str, n: int = 40):
+    df = _records(n)
+    df["conformal_mode"] = mode
+    df["u_conformal"] = 0.3
+    df["cmcs"] = 0.6
+    df["halluc"] = False
+    return df
+
+
+@pytest.mark.parametrize("mode", ["symmetric", "entropy"])
+def test_fusion_refuses_a_baseline_grade_uncertainty_mode(mode):
+    """A combiner fed a signal that peaks in the wrong place manufactures a null result."""
+    from tzsad.fusion.trust import FusionConfig, proposal_product
+
+    with pytest.raises(ValueError, match="baseline-grade"):
+        proposal_product(_fusion_records(mode), FusionConfig())
+
+
+@pytest.mark.parametrize("mode", ["boundary", "log"])
+def test_fusion_accepts_a_boundary_peaked_mode(mode):
+    from tzsad.fusion.trust import FusionConfig, proposal_product
+
+    assert len(proposal_product(_fusion_records(mode), FusionConfig())) == 40
+
+
+def test_baseline_mode_can_be_fused_deliberately_for_the_ablation():
+    from tzsad.fusion.trust import FusionConfig, proposal_product
+
+    cfg = FusionConfig(allow_baseline_signals=True)
+    assert len(proposal_product(_fusion_records("symmetric"), cfg)) == 40
