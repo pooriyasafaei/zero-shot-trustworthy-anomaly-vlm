@@ -1,0 +1,17 @@
+# Experiment outputs: caches, per-image records, figures, report tables.
+results/
+
+# Local-only working material, not part of the codebase.
+sources/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Notebooks
+.ipynb_checkpoints/

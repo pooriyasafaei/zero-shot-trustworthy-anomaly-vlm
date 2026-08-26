@@ -1,0 +1,25 @@
+# Core
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+scikit-learn>=1.2
+matplotlib>=3.7
+pillow>=9.5
+pyarrow>=12.0
+omegaconf>=2.3
+tqdm>=4.65
+
+# CLIP branch
+torch>=2.0
+open_clip_torch>=2.24
+
+# VLM branch
+transformers>=4.49
+accelerate>=0.30
+qwen-vl-utils>=0.0.8
+
+# Semantic entropy (embedding backend; the NLI backend uses transformers directly)
+sentence-transformers>=2.7
+
+# Tests
+pytest>=7.4
