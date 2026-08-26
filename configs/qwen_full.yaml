@@ -1,0 +1,19 @@
+# Phase 2 (VLM side). Identical subset to the CLIP runs, so DeLong is legitimate.
+defaults: [base.yaml]
+
+paths:
+  run_name: qwen_full
+
+data:
+  subset: n_per_folder=20
+
+qwen:
+  mode: both
+  n_samples: 8
+  prompt_variants: [qc_operator, terse, blurred]
+
+uncertainty:
+  estimators: [token_entropy, verdict_var, verbalized_conf, semantic_entropy, prompt_perturb, abstention]
+
+hallucination:
+  enabled: true

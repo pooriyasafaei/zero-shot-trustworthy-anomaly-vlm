@@ -1,0 +1,26 @@
+# Two categories, ten test images each. The end-to-end smoke test.
+defaults: [base.yaml]
+
+paths:
+  run_name: smoke
+
+data:
+  categories: [bottle, carpet]
+  subset: n_per_folder=5
+
+clip:
+  windows:
+    enabled: true
+    scales: [0.5]
+    stride_frac: 0.5
+    image_size: 224
+    map_size: 64
+
+uncertainty:
+  estimators: [prompt_std, prompt_std_z, manifold_knn]
+
+hallucination:
+  enabled: true
+
+eval:
+  n_boot: 200

@@ -1,0 +1,12 @@
+# Phase 3: the corruption sweep. The most persuasive figure in the paper.
+defaults: [clip_full.yaml]
+
+paths:
+  run_name: corruption
+
+data:
+  subset: n_per_folder=20
+
+corruption:
+  corruptions: [gaussian_noise, defocus_blur, jpeg_compression, brightness, contrast, fog]
+  severities: [1, 2, 3, 4, 5]

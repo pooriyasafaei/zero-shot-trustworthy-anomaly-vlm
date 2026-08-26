@@ -1,0 +1,12 @@
+# Phase 1/2: the full CLIP measurement foundation over all 15 categories.
+defaults: [base.yaml]
+
+paths:
+  run_name: clip_full
+
+clip:
+  windows:
+    enabled: true
+
+uncertainty:
+  estimators: [prompt_std, prompt_std_z, manifold_knn]

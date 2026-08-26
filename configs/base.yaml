@@ -1,0 +1,96 @@
+# Base configuration. Every experiment config inherits from this and every
+# number in the paper must be reproducible from one of them plus its seed.
+
+seed: 1234
+
+data:
+  root: /kaggle/input/mvtec-ad          # FILL IN for your environment
+  categories: null                      # null = every category present on disk
+  subset: full                          # test split: 'full' or 'n_per_folder=20'
+  cal_subset: full                      # train/good calibration pool; cap it for the VLM branch
+  splits: [train, test]
+
+paths:
+  results: results
+  cache: results/cache
+  run_name: default
+
+clip:
+  backbones:
+    - {name: ViT-B-16, pretrained: openai}
+  prompt_set: base
+  tau: 0.01                             # softmax temperature for s_sem
+  aggregate: mean_embedding             # mean_embedding | mean_template
+  batch_size: 32
+  allow_download: true                  # set false in offline environments
+  windows:
+    enabled: false
+    scales: [0.5, 0.3333]
+    stride_frac: 0.5
+    image_size: 336
+    map_size: 128
+    bank_k: 3
+    position_aware: true
+
+qwen:
+  model_id: Qwen/Qwen2.5-VL-3B-Instruct
+  mode: logprob                         # logprob | vote | both
+  n_samples: 10
+  temperature: 0.6
+  top_p: 0.9
+  max_new_tokens: 160
+  dtype: auto
+  max_pixels: 401408                    # 512 * 28 * 28
+  prompt_variants: []                   # e.g. [qc_operator, terse, blurred]
+
+conformal:
+  delta: 0.05
+  deltas: [0.01, 0.05, 0.10, 0.20]
+  uncertainty_mode: symmetric           # symmetric | entropy | boundary
+  randomized: false
+  n_cal: null
+  n_cal_sweep: [25, 50, 100, 200, null]
+
+uncertainty:
+  estimators: [prompt_std, prompt_std_z, manifold_knn]
+  manifold_k: 5
+  tta:
+    enabled: false
+    views: [hflip, vflip, crop90, crop80, jitter]
+  semantic_entropy:
+    backend: embedding                  # embedding | nli
+    embed_threshold: 0.85
+    entail_threshold: 0.5
+
+hallucination:
+  enabled: false
+  iou_threshold: 0.05
+  iou_sweep: [0.0, 0.01, 0.05, 0.1, 0.2, 0.3]
+  arm: language_grounding               # language_grounding | global_spatial
+  top_frac: 0.05
+  # Proposal Eq. 4/5: hallucination flag + score attenuation. Thresholds are
+  # fitted as quantiles of the normal-only calibration scores, keeping it zero-shot.
+  eq4_flag:
+    enabled: true
+    alpha: 1.5
+    cmcs_quantile: 0.10
+    anom_quantile: 0.90
+  calibrate_on: anomaly_score           # anomaly_score | s_adj
+
+fusion:
+  combiner: weighted_geometric          # proposal_product | weighted_geometric | logistic
+  uncertainty_cols: [u_conformal]
+  weights: {}
+  synthetic:
+    method: cutpaste                    # cutpaste | nsa
+    n_per_category: 50
+
+corruption:
+  corruptions: [gaussian_noise, defocus_blur, motion_blur, jpeg_compression, brightness, contrast, fog]
+  severities: [1, 2, 3, 4, 5]
+
+eval:
+  n_boot: 1000
+  n_bins: 15
+  coverages: [0.5, 0.7, 0.8, 0.9, 1.0]
+  risks: [0.05, 0.1, 0.2]

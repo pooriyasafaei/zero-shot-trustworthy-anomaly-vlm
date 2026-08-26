@@ -1,0 +1,16 @@
+# Phase 2: multi-backbone epistemic uncertainty. One cached pass per backbone.
+defaults: [clip_full.yaml]
+
+paths:
+  run_name: clip_ensemble
+
+clip:
+  backbones:
+    - {name: ViT-B-16, pretrained: openai}
+    - {name: ViT-B-32, pretrained: laion2b_s34b_b79k}
+    - {name: ViT-L-14, pretrained: openai}
+
+uncertainty:
+  estimators: [prompt_std, prompt_std_z, manifold_knn, backbone_ens, tta_var]
+  tta:
+    enabled: true
