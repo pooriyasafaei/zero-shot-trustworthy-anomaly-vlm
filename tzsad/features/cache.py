@@ -47,6 +47,28 @@ class EmbeddingCache:
         """Whether the shard for these keys already exists."""
         return self.shard_path(**kw).exists()
 
+    def image_ids(self, **kw) -> list[str]:
+        """Image ids held by a shard, or ``[]`` if it does not exist.
+
+        Reads only the id array, not the embeddings.
+        """
+        path = self.shard_path(**kw)
+        if not path.exists():
+            return []
+        with np.load(path, allow_pickle=True) as z:
+            return [str(s) for s in z["image_ids"]]
+
+    def covers(self, image_ids: Sequence[str], **kw) -> bool:
+        """Whether an existing shard contains **every** requested image id.
+
+        The cache key is ``(model, category, split, corruption)`` and says nothing
+        about *which* images went in, so a shard built from a subsampled index
+        would otherwise be reused for a later full-index request and fail at
+        scoring time with a missing-id error. Checking coverage turns that into a
+        cheap top-up.
+        """
+        return set(image_ids) <= set(self.image_ids(**kw))
+
     def save(self, image_ids: Sequence[str], embeddings: np.ndarray, meta: dict | None = None, **kw) -> Path:
         """Persist embeddings as float16 alongside their image ids."""
         path = self.shard_path(**kw)

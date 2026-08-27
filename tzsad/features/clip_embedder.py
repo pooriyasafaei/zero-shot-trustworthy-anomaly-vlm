@@ -173,11 +173,13 @@ class ClipEmbedder:
             else int(self._model.visual.output_dim)
 
 
-def corruption_transform(name: str, severity: int, seed: int = 0) -> Callable[[Image.Image], Image.Image] | None:
+def corruption_transform(name: str, severity: int, seed: int = 0,
+                         working_size: int | None = None) -> Callable[[Image.Image], Image.Image] | None:
     """Build a PIL transform for a corruption, or ``None`` for the clean setting."""
     if name in ("none", "", None) or severity == 0:
         return None
-    return lambda img: apply_corruption(img, name, severity, seed=seed)
+    kw = {} if working_size is None else {"working_size": working_size}
+    return lambda img: apply_corruption(img, name, severity, seed=seed, **kw)
 
 
 def embed_index(
@@ -192,8 +194,10 @@ def embed_index(
 ) -> None:
     """Embed every (category, split) group of ``index`` into ``cache``.
 
-    Skips groups whose shard already exists unless ``overwrite`` is set, so an
-    interrupted run resumes for free.
+    A group is skipped only when its shard already covers every requested image.
+    A shard built from a subsampled index is *topped up* with the missing images
+    rather than reused blindly, because the cache key records the model, category
+    and corruption but not which images went in.
     """
     tag = embedder.spec.cache_tag
     transform = corruption_transform(corruption, severity, seed)
@@ -201,12 +205,20 @@ def embed_index(
         group = group.sort_values("image_id")
         keys = dict(model_tag=tag, category=category, split=split,
                     corruption=corruption, severity=severity)
-        if overwrite or not cache.has(kind="image", **keys):
-            emb = embedder.encode_images(group["path"].tolist(), transform)
-            cache.save(group["image_id"].tolist(), emb, meta={"model_id": embedder.spec.model_id},
-                       kind="image", **keys)
-            log.info("embedded %-12s %-5s %4d images", category, split, len(group))
-        if windows is not None and (overwrite or not cache.has(kind="window", **keys)):
+        wanted = group["image_id"].tolist()
+        if overwrite or not cache.covers(wanted, kind="image", **keys):
+            have = {} if overwrite else cache.load_as_dict(kind="image", **keys) \
+                if cache.has(kind="image", **keys) else {}
+            todo = group[~group["image_id"].isin(have)]
+            if len(todo):
+                new = embedder.encode_images(todo["path"].tolist(), transform)
+                have.update(dict(zip(todo["image_id"].tolist(), new)))
+            merged_ids = sorted(have)
+            cache.save(merged_ids, np.stack([have[i] for i in merged_ids]),
+                       meta={"model_id": embedder.spec.model_id}, kind="image", **keys)
+            log.info("embedded %-12s %-5s %4d new (%d cached)", category, split,
+                     len(todo), len(have) - len(todo))
+        if windows is not None and (overwrite or not cache.covers(wanted, kind="window", **keys)):
             wemb = embedder.encode_windows(group["path"].tolist(), windows, transform)
             n, k, d = wemb.shape
             cache.save(group["image_id"].tolist(), wemb.reshape(n, k * d),

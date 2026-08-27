@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
 
     records = P.load_stage(Path(args.records))
     index = P.stage_index(cfg)
+    report_dir = run_dir / "report"
+    report_dir.mkdir(parents=True, exist_ok=True)
 
     # -- calibrate, then attach every uncertainty channel --------------------
     test, calib, coverage = P.stage_calibrate(cfg, records)
@@ -101,8 +103,6 @@ def main(argv: list[str] | None = None) -> int:
     log.info("bake-off over %d signals on %d test images: %s", len(signals), len(test),
              ", ".join(s.removeprefix("u_") for s in signals))
 
-    report_dir = run_dir / "report"
-    report_dir.mkdir(parents=True, exist_ok=True)
     n_boot = int(cfg.eval.n_boot)
 
     frames = []

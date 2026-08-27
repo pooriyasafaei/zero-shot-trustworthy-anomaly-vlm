@@ -178,3 +178,42 @@ def test_figures_are_written(smoke_cfg, tmp_path):
 
     tbl = error_prediction_table(test, "correct", n_boot=50)
     assert plot_error_prediction(tbl, fig_dir / "err")[0].exists()
+
+
+def test_corruption_embedding_can_be_restricted_to_the_test_split(smoke_cfg):
+    """The corruption sweep must not re-embed - or corrupt - the calibration pool.
+
+    Conformal thresholds have to stay at their clean values: recalibrating on
+    corrupted normals lets the threshold drift with the corruption and hides the
+    silent failure the sweep exists to measure. It also avoids re-embedding ~2/3
+    of MVTec in each of the 35 cells.
+    """
+    from tzsad.features.cache import EmbeddingCache
+
+    index = P.stage_index(smoke_cfg)
+    P.stage_embed(smoke_cfg, index, corruption="gaussian_noise", severity=3, splits=("test",))
+
+    cache = EmbeddingCache(smoke_cfg.paths.cache)
+    keys = dict(model_tag="Fake-B__test", category="bottle",
+                corruption="gaussian_noise", severity=3, kind="image")
+    assert cache.has(split="test", **keys)
+    assert not cache.has(split="train", **keys), "the calibration pool must stay clean"
+
+
+def test_clean_calibration_with_corrupted_test_keeps_the_clean_threshold(smoke_cfg):
+    """Thresholds fitted on clean normals must not move when the test set degrades."""
+    import pandas as pd
+
+    index = P.stage_index(smoke_cfg)
+    embedders = P.stage_embed(smoke_cfg, index)
+    clean = P.stage_score_clip(smoke_cfg, index, embedders)["Fake-B__test"]
+    clean_train = clean[(clean["split"] == "train") & (clean["label"] == 0)]
+
+    test_index = index[index["split"] == "test"]
+    P.stage_embed(smoke_cfg, test_index, "gaussian_noise", 3, splits=("test",))
+    corrupted = P.stage_score_clip(smoke_cfg, test_index, embedders, "gaussian_noise", 3)["Fake-B__test"]
+
+    _, calib_clean, _ = P.stage_calibrate(smoke_cfg, clean)
+    _, calib_corrupt, _ = P.stage_calibrate(
+        smoke_cfg, pd.concat([clean_train, corrupted], ignore_index=True))
+    assert calib_clean.thresholds_ == calib_corrupt.thresholds_
