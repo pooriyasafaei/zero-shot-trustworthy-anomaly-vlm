@@ -27,6 +27,7 @@ import torch
 from PIL import Image, ImageFilter
 
 from ..data.corruptions import apply_corruption
+from ..utils.checkpoint import RecordCheckpoint
 from ..utils.logging import get_logger
 from .base import Scorer, ScoringContext
 from .prompts import class_name_for
@@ -50,6 +51,7 @@ class QwenScorerConfig:
     max_pixels: int = 512 * 28 * 28    # caps visual tokens; the T4-friendly setting
     prompt_variants: tuple[str, ...] = ()   # names from qwen_parse.PROMPT_VARIANTS
     generations_dir: str = ""          # if set, every raw generation is written here
+    checkpoint_path: str = ""          # if set, per-image records are appended here and resumed
 
 
 class QwenScorer(Scorer):
@@ -192,15 +194,32 @@ class QwenScorer(Scorer):
 
     # -- Scorer API --------------------------------------------------------
     def score_index(self, index: pd.DataFrame, ctx: ScoringContext) -> pd.DataFrame:
-        """Run the VLM over every row of ``index`` and return per-image records."""
-        self.load()
+        """Run the VLM over every row of ``index`` and return per-image records.
+
+        With ``checkpoint_path`` set, each image's record is appended as it is
+        produced and already-scored images are skipped on a later run. A VLM pass
+        over MVTec takes hours; losing it to an expiring session is not acceptable,
+        and the generations dumped alongside are useless without their scores.
+        """
         gen_dir = Path(self.config.generations_dir) if self.config.generations_dir else None
         if gen_dir:
             gen_dir.mkdir(parents=True, exist_ok=True)
         variants = [v for v in PROMPT_VARIANTS if v.name in self.config.prompt_variants]
 
+        ckpt = RecordCheckpoint(self.config.checkpoint_path) if self.config.checkpoint_path else None
+        todo = index
+        if ckpt is not None:
+            done = ckpt.done_ids()
+            todo = index[~index["image_id"].astype(str).isin(done)]
+            if len(done):
+                log.info("resuming: %d/%d images already scored, %d to go",
+                         len(done), len(index), len(todo))
+        if len(todo) == 0 and ckpt is not None:
+            return self.finalize(_ordered(ckpt.to_frame(), index), ctx)
+
+        self.load()
         rows: list[dict] = []
-        for n_done, (_, r) in enumerate(index.iterrows(), 1):
+        for n_done, (_, r) in enumerate(todo.iterrows(), 1):
             image = Image.open(r["path"]).convert("RGB")
             if ctx.corruption not in ("none", ""):
                 image = apply_corruption(image, ctx.corruption, int(ctx.severity))
@@ -254,11 +273,28 @@ class QwenScorer(Scorer):
             if gen_dir:
                 _dump_generations(gen_dir, r["image_id"], samples)
             rows.append(rec)
+            if ckpt is not None:
+                ckpt.append(rec)
             if n_done % 25 == 0:
-                log.info("qwen scored %d/%d images", n_done, len(index))
+                log.info("qwen scored %d/%d images this pass", n_done, len(todo))
 
-        records = pd.DataFrame(rows)
-        return self.finalize(records, ctx)
+        if ckpt is not None:
+            ckpt.flush()
+            return self.finalize(_ordered(ckpt.to_frame(), index), ctx)
+        return self.finalize(pd.DataFrame(rows), ctx)
+
+
+def _ordered(records: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
+    """Put checkpointed records back into index order and drop anything stale.
+
+    A checkpoint may hold images from a previous, wider index; restricting to the
+    current one keeps the record file honest about what this run covers.
+    """
+    if records.empty:
+        return records
+    keep = records[records["image_id"].astype(str).isin(index["image_id"].astype(str))]
+    order = {v: i for i, v in enumerate(index["image_id"].astype(str))}
+    return keep.sort_values("image_id", key=lambda c: c.map(order)).reset_index(drop=True)
 
 
 def _dump_generations(gen_dir: Path, image_id: str, samples: Sequence[VlmSample]) -> None:

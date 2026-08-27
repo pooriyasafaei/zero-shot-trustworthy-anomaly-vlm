@@ -26,6 +26,7 @@ from tzsad.eval.bootstrap import bootstrap_metric
 from tzsad.eval.metrics import safe_auroc
 from tzsad.eval.selective import risk_coverage_curve
 from tzsad.records import uncertainty_columns
+from tzsad.utils.checkpoint import StageLedger
 from tzsad.utils.config import load_config, to_dict
 from tzsad.utils.logging import setup_logging
 from tzsad.utils.repro import start_run
@@ -92,15 +93,25 @@ def main(argv: list[str] | None = None) -> int:
     clean_train = clean_all[(clean_all.split == "train") & (clean_all.label == 0)]
     log.info("clean calibration pool: %d normal images (never corrupted)", len(clean_train))
 
-    rows = [evaluate_setting(cfg, index, embedders, "none", 0, clean_train)]
-    log.info("clean AUROC %.4f", rows[0]["auroc"])
-    for corruption in cfg.corruption.corruptions:
-        for severity in cfg.corruption.severities:
-            row = evaluate_setting(cfg, index, embedders, str(corruption), int(severity),
-                                   clean_train)
-            rows.append(row)
-            log.info("%-18s s=%d  AUROC %.4f  acc %.3f", corruption, severity,
-                     row["auroc"], row["accuracy"])
+    # One ledger entry per (corruption, severity) cell, so an interrupted sweep
+    # resumes at the cell it died on instead of re-embedding everything.
+    ledger = StageLedger(run_dir / "corruption_cells.json")
+    cells = [("none", 0)] + [(str(c), int(s)) for c in cfg.corruption.corruptions
+                             for s in cfg.corruption.severities]
+    if ledger.done_keys:
+        log.info("resuming sweep: %d/%d cells already complete", len(ledger.done_keys), len(cells))
+
+    rows = []
+    for corruption, severity in cells:
+        key = f"{corruption}@{severity}"
+        if ledger.is_done(key):
+            rows.append(ledger.payload(key))
+            continue
+        row = evaluate_setting(cfg, index, embedders, corruption, severity, clean_train)
+        ledger.mark(key, row)
+        rows.append(row)
+        log.info("%-18s s=%d  AUROC %.4f  acc %.3f", corruption, severity,
+                 row["auroc"], row["accuracy"])
 
     sweep = pd.DataFrame(rows)
     report_dir = run_dir / "report"

@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
             top_p=float(cfg.qwen.top_p), max_new_tokens=int(cfg.qwen.max_new_tokens),
             dtype=str(cfg.qwen.dtype), max_pixels=int(cfg.qwen.max_pixels),
             prompt_variants=tuple(cfg.qwen.prompt_variants), generations_dir=str(gen_dir),
+            checkpoint_path=str(run_dir / "records_qwen.jsonl"),
         )
         scorer = QwenScorer(qcfg)
         ctx = ScoringContext(run_id=str(cfg.paths.run_name),
