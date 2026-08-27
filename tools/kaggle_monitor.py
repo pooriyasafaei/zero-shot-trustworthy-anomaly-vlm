@@ -56,15 +56,15 @@ class Job:
 
 
 JOBS = [
-    Job("qwen", "run_qwen.py", "/kaggle/working/qwen.log",
+    Job("qwen_a", "paths.run_name=qwen_a", "/kaggle/working/qwen_a.log",
+        r"qwen scored (\d+)/(\d+) images", "POOLED AUROC"),
+    Job("qwen_b", "paths.run_name=qwen_b", "/kaggle/working/qwen_b.log",
         r"qwen scored (\d+)/(\d+) images", "POOLED AUROC"),
     Job("corruption", "run_corruption.py", "/kaggle/working/corruption.log",
         r"", "silent-failure cells"),
-    Job("ensemble", "run_clip.py", "/kaggle/working/ensemble.log",
-        r"", "POOLED AUROC"),
-    Job("bakeoff", "run_bakeoff.py", "/kaggle/working/bakeoff.log",
+    Job("bakeoff", "run_bakeoff.py", "/kaggle/working/bakeoff_full.log",
         r"", "bake-off written"),
-    Job("synthetic", "make_synthetic.py", "", r"", ""),
+    Job("clip", "run_clip.py", "/kaggle/working/run_clip.log", r"", "POOLED AUROC"),
 ]
 
 _ANSI = re.compile(r"\033\[[0-9;]*m")
@@ -79,6 +79,7 @@ def pad(text: str, width: int) -> str:
     """Left-align to a visible width, ignoring colour codes."""
     return text + " " * max(0, width - vlen(text))
 
+
 # Number of (corruption, severity) cells the sweep will run: 1 clean + 6 x 5.
 CORRUPTION_CELLS = 31
 
@@ -91,13 +92,14 @@ out['gpu'] = sh("nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,m
 out['load'] = sh("cat /proc/loadavg")
 out['ncpu'] = sh("nproc")
 out['disk'] = sh("df -h /kaggle/working | tail -1 | awk '{print $3\" / \"$2}'")
-out['ps'] = sh("ps -eo etime,pcpu,cmd | grep -E 'run_qwen|run_corruption|run_clip|run_bakeoff|make_synthetic' | grep -v grep")
+out['ps'] = sh("ps -eww -o etime,pcpu,cmd | grep -E 'scripts/run_' | grep -v grep")
+import glob
 logs = {}
 for name, path in %(LOGPATHS)s.items():
-    if os.path.exists(path):
-        logs[name] = sh("tail -c 60000 " + path)
-    else:
-        logs[name] = ""
+    stem = os.path.basename(path)[:-4] if path.endswith('.log') else name
+    matches = sorted(glob.glob('/kaggle/working/%%s*.log' %% stem), key=os.path.getmtime)
+    chosen = matches[-1] if matches else (path if os.path.exists(path) else '')
+    logs[name] = sh("tail -c 60000 " + chosen) if chosen else ""
 out['logs'] = logs
 print("@@JSON@@" + json.dumps(out))
 """
@@ -201,6 +203,12 @@ def update_jobs(data: dict, jobs: list[Job]) -> None:
             hits = re.findall(job.progress_re, log)
             if hits:
                 job.cur, job.total = int(hits[-1][0]), int(hits[-1][1])
+            # A resumed job counts from zero for the current pass; fold in what a
+            # previous pass already checkpointed so the bar reflects real progress.
+            resumed = re.findall(r"resuming: (\d+)/(\d+) images already scored", log)
+            if resumed:
+                already, total = int(resumed[-1][0]), int(resumed[-1][1])
+                job.cur, job.total = job.cur + already, total
         elif job.name == "corruption":
             job.cur = len(re.findall(r"s=\d+\s+AUROC", log)) + log.count("clean AUROC")
             job.total = CORRUPTION_CELLS

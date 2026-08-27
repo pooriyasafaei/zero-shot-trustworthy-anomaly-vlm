@@ -65,6 +65,12 @@ def kernel_exec(code: str, timeout: int = 600, quiet: bool = False) -> tuple[str
     kernels = r.json()
     if not kernels:
         sys.exit("no kernel running on the session; open the notebook once to start one")
+    if kernels[0].get("execution_state") == "busy":
+        # The kernel runs one request at a time. A previous call that hung leaves it
+        # busy and every later call queues silently behind it, which looks like the
+        # tooling is broken rather than blocked.
+        print("[remote] kernel is busy; interrupting the stuck execution", file=sys.stderr)
+        interrupt_kernel()
     ws = websocket.create_connection(
         base.replace("https://", "wss://") + f"/api/kernels/{kernels[0]['id']}/channels",
         timeout=timeout, header={"User-Agent": "Mozilla/5.0"})
@@ -110,6 +116,23 @@ def kernel_exec(code: str, timeout: int = 600, quiet: bool = False) -> tuple[str
     finally:
         ws.close()
     return status, "".join(chunks)
+
+
+def interrupt_kernel() -> None:
+    """Interrupt whatever the kernel is currently executing."""
+    base = base_url()
+    try:
+        kernels = requests.get(base + "/api/kernels", timeout=30).json()
+        if not kernels:
+            return
+        requests.post(f"{base}/api/kernels/{kernels[0]['id']}/interrupt", timeout=30)
+        for _ in range(10):
+            time.sleep(1.5)
+            if requests.get(base + "/api/kernels", timeout=30).json()[0][
+                    "execution_state"] == "idle":
+                return
+    except requests.RequestException as exc:
+        print(f"[remote] interrupt failed: {exc}", file=sys.stderr)
 
 
 def shell(cmd: str, timeout: int = 600, quiet: bool = False) -> tuple[str, str]:
@@ -202,56 +225,69 @@ def cmd_sh(args: argparse.Namespace) -> int:
 def cmd_pull(args: argparse.Namespace) -> int:
     """Copy result artefacts back here, so they survive the session.
 
-    Embedding caches are excluded by default: they are hundreds of MB and are
-    rebuildable from the dataset, whereas records, reports and figures are the
-    outputs that must not be lost.
+    Embedding caches are excluded by default: hundreds of MB, and rebuildable from
+    the dataset. Records, reports and figures are the outputs that must not be lost.
+
+    The archive is streamed in one base64 blob rather than many small reads - each
+    read is a websocket round trip, and a few hundred of them is what made an
+    earlier version appear to hang.
     """
     dest = REPO / args.dest
     dest.mkdir(parents=True, exist_ok=True)
-    include = "-o -name '*.csv' -o -name '*.parquet' -o -name '*.json' -o -name '*.jsonl' " \
-              "-o -name '*.pdf' -o -name '*.png' -o -name '*.log'"
+    keep_ext = "('.csv','.parquet','.json','.jsonl','.pdf','.png','.log')"
     st, out = kernel_exec(f"""
 import base64, io, os, tarfile
 root = {REMOTE_RESULTS!r}
-buf = io.BytesIO()
-kept = 0
+# A TZ-SAD run directory is the one thing that writes manifest.json, so this picks
+# up our runs and leaves anything else in the results folder alone - that directory
+# is shared with whatever else the session owner put there.
+runs = sorted(d for d in os.listdir(root)
+              if os.path.isfile(os.path.join(root, d, 'manifest.json')))
+buf, kept = io.BytesIO(), 0
 with tarfile.open(fileobj=buf, mode='w:gz') as t:
-    for dirpath, dirnames, filenames in os.walk(root):
-        if 'cache' in dirpath.split(os.sep) and not {args.include_cache!r}:
-            continue
-        for fn in filenames:
-            if not fn.endswith(('.csv','.parquet','.json','.jsonl','.pdf','.png','.log','.npz')):
+    for run in runs:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(root, run)):
+            if not {args.include_cache!r} and 'cache' in dirpath.split(os.sep):
+                dirnames[:] = []
                 continue
-            full = os.path.join(dirpath, fn)
-            if not {args.include_cache!r} and full.endswith('.npz') and 'cache' in full:
-                continue
-            if os.path.getsize(full) > {args.max_mb} * 1e6:
-                continue
-            t.add(full, arcname=os.path.relpath(full, root))
-            kept += 1
-data = base64.b64encode(buf.getvalue()).decode()
-print('FILES', kept, 'BYTES', len(data))
-open('/kaggle/working/_down.b64','w').write(data)
-""", quiet=True)
+            for fn in filenames:
+                if not fn.endswith({keep_ext}):
+                    continue
+                full = os.path.join(dirpath, fn)
+                try:
+                    if os.path.getsize(full) > {args.max_mb} * 1e6:
+                        continue
+                    t.add(full, arcname=os.path.relpath(full, root))
+                    kept += 1
+                except OSError:
+                    pass
+print('PULL_RUNS', ','.join(runs))
+print('PULL_META', kept, buf.tell())
+_blob = base64.b64encode(buf.getvalue()).decode()
+""", timeout=args.timeout, quiet=True)
     if st != "ok":
         print(out[-800:])
         return 1
-    print(out.strip().splitlines()[-1])
-    _, size_out = kernel_exec("print(os.path.getsize('/kaggle/working/_down.b64'))", quiet=True)
-    total = int(size_out.strip().splitlines()[-1])
-    parts = []
-    for off in range(0, total, CHUNK):
-        _, chunk = kernel_exec(
-            f"print(open('/kaggle/working/_down.b64').read()[{off}:{off + CHUNK}], end='')",
-            quiet=True)
-        parts.append(chunk)
-        print(f"  {min(off + CHUNK, total) / 1e3:.0f}/{total / 1e3:.0f} KB", end="\r")
-    raw = base64.b64decode("".join(parts))
+    runs = [l.split(None, 1)[1] for l in out.splitlines() if l.startswith("PULL_RUNS")]
+    if runs:
+        print("runs:", runs[-1])
+    meta = [l for l in out.splitlines() if l.startswith("PULL_META")]
+    if not meta:
+        print("unexpected output:", out[-400:])
+        return 1
+    n_files, n_bytes = meta[-1].split()[1:]
+    print(f"archiving {n_files} files ({int(n_bytes) / 1e6:.1f} MB) ...")
+
+    st, blob = kernel_exec("print(_blob)", timeout=args.timeout, quiet=True)
+    if st != "ok":
+        print(blob[-500:])
+        return 1
+    raw = base64.b64decode("".join(blob.split()))
     with tarfile.open(fileobj=io.BytesIO(raw)) as t:
         t.extractall(dest)
-    kernel_exec("import os; os.remove('/kaggle/working/_down.b64')", quiet=True)
-    n = sum(1 for _ in dest.rglob("*") if _.is_file())
-    print(f"\npulled into {dest} ({n} files)")
+    kernel_exec("del _blob", quiet=True)
+    n = sum(1 for f in dest.rglob("*") if f.is_file())
+    print(f"pulled into {dest.relative_to(REPO)} ({n} files)")
     return 0
 
 
@@ -292,7 +328,11 @@ def main() -> int:
     p.add_argument("--dest", default="results_remote")
     p.add_argument("--include-cache", action="store_true", help="also pull embedding caches")
     p.add_argument("--max-mb", type=float, default=25.0)
+    p.add_argument("-t", "--timeout", type=int, default=900)
     p.set_defaults(fn=cmd_pull)
+
+    sub.add_parser("interrupt", help="unstick a busy kernel").set_defaults(
+        fn=lambda a: (interrupt_kernel(), 0)[1])
 
     args = ap.parse_args()
     return args.fn(args)

@@ -77,6 +77,48 @@ pytest                       # unit tests + smoke test, no GPU or weights requir
 Every run writes `manifest.json` (config, seed, git SHA, library versions, GPU names)
 and `run.log` into its results directory.
 
+## Running across environments
+
+Configs ship with `data.root: auto` and `paths.results: auto`, resolved per
+runtime (Kaggle / Colab / local), from `TZSAD_DATA_ROOT` / `TZSAD_RESULTS`, or from
+conventional locations. An explicit value always wins, so nothing needs editing to
+move between machines:
+
+```bash
+python scripts/run_clip.py --config configs/clip_full.yaml            # anywhere
+TZSAD_DATA_ROOT=/data/mvtec python scripts/run_clip.py --config ...   # or pin it
+```
+
+## Interrupted runs resume
+
+Long GPU passes die for reasons unrelated to the code — an expiring session, a
+closed notebook, a preempted machine. Every expensive stage checkpoints as it goes:
+
+| stage | unit | mechanism |
+|---|---|---|
+| CLIP embedding | image | shard coverage check; missing images are topped up |
+| VLM scoring | image | `records_qwen.jsonl`, one fsync'd line per image |
+| corruption sweep | (corruption, severity) cell | `corruption_cells.json` ledger |
+
+Re-running the same command continues where it stopped and says so
+(`resuming: 20/255 images already scored, 235 to go`). Nothing needs a flag.
+
+## Driving a remote GPU session
+
+```bash
+tools/remote deploy                      # push the working tree
+tools/remote run --gpu 1 --name qwen scripts/run_qwen.py --config configs/qwen_subset.yaml
+tools/remote status                      # GPUs, running jobs, results
+tools/remote logs qwen -n 40             # tail a job log
+tools/remote pull                        # copy results here so they outlive the session
+tools/remote interrupt                   # unstick a busy kernel
+```
+
+`deploy` overwrites in place and never deletes the remote tree, since running
+processes have it as their working directory. `pull` takes only directories
+containing a `manifest.json` — i.e. our runs — and skips embedding caches, which
+are large and rebuildable.
+
 ## Monitoring a remote run
 
 GPU work runs on a remote session; `tools/watch` renders a live dashboard of GPU
