@@ -27,6 +27,7 @@ import torch
 from PIL import Image, ImageFilter
 
 from ..data.corruptions import apply_corruption
+from ..utils.budget import TimeBudget, UnitTimer
 from ..utils.checkpoint import RecordCheckpoint
 from ..utils.logging import get_logger
 from .base import Scorer, ScoringContext
@@ -193,7 +194,8 @@ class QwenScorer(Scorer):
         return [parse_generation(t) for t in texts]
 
     # -- Scorer API --------------------------------------------------------
-    def score_index(self, index: pd.DataFrame, ctx: ScoringContext) -> pd.DataFrame:
+    def score_index(self, index: pd.DataFrame, ctx: ScoringContext,
+                    budget: TimeBudget | None = None) -> pd.DataFrame:
         """Run the VLM over every row of ``index`` and return per-image records.
 
         With ``checkpoint_path`` set, each image's record is appended as it is
@@ -219,7 +221,17 @@ class QwenScorer(Scorer):
 
         self.load()
         rows: list[dict] = []
+        stopped_early = False
         for n_done, (_, r) in enumerate(todo.iterrows(), 1):
+            # Stop before starting an image that cannot finish: a half-scored image
+            # is not a resumable state, and the checkpoint must stay consistent.
+            if budget is not None and not budget.has_room():
+                log.warning("time budget reached after %d/%d images this pass; %s",
+                            n_done - 1, len(todo), budget.report())
+                stopped_early = True
+                break
+            timer = UnitTimer(budget)
+            timer.__enter__()
             image = Image.open(r["path"]).convert("RGB")
             if ctx.corruption not in ("none", ""):
                 image = apply_corruption(image, ctx.corruption, int(ctx.severity))
@@ -275,13 +287,18 @@ class QwenScorer(Scorer):
             rows.append(rec)
             if ckpt is not None:
                 ckpt.append(rec)
+            timer.__exit__()
             if n_done % 25 == 0:
                 log.info("qwen scored %d/%d images this pass", n_done, len(todo))
 
         if ckpt is not None:
             ckpt.flush()
-            return self.finalize(_ordered(ckpt.to_frame(), index), ctx)
-        return self.finalize(pd.DataFrame(rows), ctx)
+            out = self.finalize(_ordered(ckpt.to_frame(), index), ctx)
+            out.attrs["complete"] = not stopped_early
+            return out
+        records = self.finalize(pd.DataFrame(rows), ctx)
+        records.attrs["complete"] = not stopped_early
+        return records
 
 
 def _ordered(records: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:

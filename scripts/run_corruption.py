@@ -26,6 +26,7 @@ from tzsad.eval.bootstrap import bootstrap_metric
 from tzsad.eval.metrics import safe_auroc
 from tzsad.eval.selective import risk_coverage_curve
 from tzsad.records import uncertainty_columns
+from tzsad.utils.budget import TimeBudget, UnitTimer
 from tzsad.utils.checkpoint import StageLedger
 from tzsad.utils.config import load_config, to_dict
 from tzsad.utils.logging import setup_logging
@@ -79,6 +80,8 @@ def evaluate_setting(cfg, index, embedders, corruption: str, severity: int,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
+    ap.add_argument("--budget-minutes", type=float, default=None,
+                    help="stop starting new cells once this much wall clock is used")
     ap.add_argument("overrides", nargs="*")
     args = ap.parse_args(argv)
 
@@ -86,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = P.run_dir_for(cfg)
     log = setup_logging(run_dir)
     start_run(run_dir, to_dict(cfg), int(cfg.seed))
+    budget = TimeBudget(args.budget_minutes * 60) if args.budget_minutes else None
 
     index = P.stage_index(cfg)
     embedders = P.stage_embed(cfg, index)
@@ -107,7 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         if ledger.is_done(key):
             rows.append(ledger.payload(key))
             continue
-        row = evaluate_setting(cfg, index, embedders, corruption, severity, clean_train)
+        if budget is not None and not budget.has_room():
+            log.warning("time budget reached with %d/%d cells done; re-run to continue",
+                        len(ledger.done_keys), len(cells))
+            break
+        with UnitTimer(budget):
+            row = evaluate_setting(cfg, index, embedders, corruption, severity, clean_train)
         ledger.mark(key, row)
         rows.append(row)
         log.info("%-18s s=%d  AUROC %.4f  acc %.3f", corruption, severity,

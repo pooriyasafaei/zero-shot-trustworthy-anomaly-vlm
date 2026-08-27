@@ -27,6 +27,7 @@ from tzsad.uncertainty.semantic_entropy import ClusteringConfig
 from tzsad.uncertainty.vlm_side import (AbstentionFlag, PromptPerturbationConsistency,
                                         SemanticEntropy, TokenEntropy, VerbalizedConfidence,
                                         VerdictVariance)
+from tzsad.utils.budget import TimeBudget
 from tzsad.utils.config import load_config, to_dict
 from tzsad.utils.logging import setup_logging
 from tzsad.utils.repro import start_run
@@ -36,6 +37,8 @@ from tzsad.viz.plots import plot_error_prediction, plot_reliability, plot_risk_c
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
+    ap.add_argument("--budget-minutes", type=float, default=None,
+                    help="stop starting new images once this much wall clock is used")
     ap.add_argument("--skip-scoring", action="store_true",
                     help="reuse records_qwen.parquet and only redo the offline stages")
     ap.add_argument("overrides", nargs="*")
@@ -65,8 +68,13 @@ def main(argv: list[str] | None = None) -> int:
         scorer = QwenScorer(qcfg)
         ctx = ScoringContext(run_id=str(cfg.paths.run_name),
                              subset_tag=str(cfg.data.subset).replace("=", ""))
-        records = scorer.score_index(index, ctx)
+        budget = TimeBudget(args.budget_minutes * 60) if args.budget_minutes else None
+        records = scorer.score_index(index, ctx, budget=budget)
         P.save_stage(records, records_path)
+        if not records.attrs.get("complete", True):
+            log.warning("scoring stopped on the time budget with %d/%d images; "
+                        "re-run the same command to continue", len(records), len(index))
+            return 2
         log.info("scored %d images; abstention rate %.3f",
                  len(records), 1.0 - records["parse_ok"].mean())
 
