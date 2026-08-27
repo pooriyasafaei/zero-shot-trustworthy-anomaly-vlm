@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import random
@@ -105,12 +106,47 @@ class RunContext:
         return path
 
 
+#: Config fields whose change means a re-run covers different data, not just
+#: different settings - overwriting then silently replaces results at one scale
+#: with results at another.
+_SCOPE_FIELDS = (("data", "categories"), ("data", "subset"), ("data", "cal_subset"))
+
+
 def start_run(run_dir: Path | str, config: Mapping[str, Any], seed: int) -> RunContext:
-    """Seed everything, create ``run_dir`` and drop a provenance manifest in it."""
+    """Seed everything, create ``run_dir`` and drop a provenance manifest in it.
+
+    Warns loudly when an existing run in the same directory covered a different
+    data scope: a small test run reusing a run_name will otherwise overwrite
+    full-scale records with a handful of rows, and nothing about the resulting
+    files says that happened.
+    """
     seed_everything(seed)
+    _warn_on_scope_change(Path(run_dir), config)
     ctx = RunContext(Path(run_dir), seed, config)
     ctx.write_manifest()
     return ctx
+
+
+def _warn_on_scope_change(run_dir: Path, config: Mapping[str, Any]) -> None:
+    manifest = run_dir / "manifest.json"
+    if not manifest.exists():
+        return
+    try:
+        previous = json.loads(manifest.read_text()).get("config", {})
+    except (OSError, json.JSONDecodeError):
+        return
+    changed = []
+    for section, field in _SCOPE_FIELDS:
+        was = (previous.get(section) or {}).get(field)
+        now = (dict(config).get(section) or {}).get(field)
+        if was != now:
+            changed.append(f"{section}.{field}: {was!r} -> {now!r}")
+    if changed:
+        logging.getLogger("tzsad.repro").warning(
+            "run directory %s already holds a run over a DIFFERENT data scope and is "
+            "about to be overwritten (%s). Use a distinct paths.run_name, or a separate "
+            "paths.results, if you did not mean to replace it.",
+            run_dir, "; ".join(changed))
 
 
 def _jsonable(obj: Any) -> Any:

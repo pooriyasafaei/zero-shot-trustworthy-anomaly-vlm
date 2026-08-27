@@ -181,3 +181,27 @@ def test_stable_seed_depends_on_every_component_of_the_key():
     assert base != _stable_seed("gaussian_noise", 4, 0)
     assert base != _stable_seed("gaussian_noise", 3, 1)
     assert 0 <= base < 2**32
+
+
+def test_start_run_warns_when_overwriting_a_different_data_scope(tmp_path, caplog):
+    """A small test run reusing a run_name silently replaced full-scale records.
+
+    Nothing in the resulting files recorded that it happened, so the guard has to
+    fire at write time.
+    """
+    from tzsad.utils.repro import start_run
+
+    run_dir = tmp_path / "clip_full"
+    full = {"data": {"categories": None, "subset": "full", "cal_subset": "full"}}
+    start_run(run_dir, full, seed=0)
+
+    small = {"data": {"categories": ["bottle"], "subset": "n_per_folder=4",
+                      "cal_subset": "full"}}
+    with caplog.at_level("WARNING"):
+        start_run(run_dir, small, seed=0)
+    assert any("DIFFERENT data scope" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        start_run(run_dir, small, seed=0)          # same scope again: silent
+    assert not any("DIFFERENT data scope" in r.message for r in caplog.records)

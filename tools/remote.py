@@ -66,11 +66,24 @@ def kernel_exec(code: str, timeout: int = 600, quiet: bool = False) -> tuple[str
     if not kernels:
         sys.exit("no kernel running on the session; open the notebook once to start one")
     if kernels[0].get("execution_state") == "busy":
-        # The kernel runs one request at a time. A previous call that hung leaves it
-        # busy and every later call queues silently behind it, which looks like the
-        # tooling is broken rather than blocked.
-        print("[remote] kernel is busy; interrupting the stuck execution", file=sys.stderr)
-        interrupt_kernel()
+        # The kernel runs one request at a time, so a call issued now would queue
+        # silently behind whatever is running. Wait for it rather than interrupting:
+        # the busy execution is usually legitimate long-running work of our own, and
+        # killing it is exactly the wrong default.
+        print("[remote] kernel busy; waiting for it to go idle "
+              "(tools/remote interrupt to cancel it)", file=sys.stderr)
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            time.sleep(3)
+            try:
+                if requests.get(base + "/api/kernels", timeout=30).json()[0][
+                        "execution_state"] == "idle":
+                    break
+            except requests.RequestException:
+                pass
+        else:
+            sys.exit("[remote] kernel still busy after 120s. If it is stuck, run: "
+                     "tools/remote interrupt")
     ws = websocket.create_connection(
         base.replace("https://", "wss://") + f"/api/kernels/{kernels[0]['id']}/channels",
         timeout=timeout, header={"User-Agent": "Mozilla/5.0"})
