@@ -4,15 +4,17 @@
 seed: 1234
 
 data:
-  root: /kaggle/input/mvtec-ad          # FILL IN for your environment
+  # 'auto' resolves per environment (Kaggle / Colab / local) or from
+  # TZSAD_DATA_ROOT. An explicit path here always wins.
+  root: auto
   categories: null                      # null = every category present on disk
   subset: full                          # test split: 'full' or 'n_per_folder=20'
   cal_subset: full                      # train/good calibration pool; cap it for the VLM branch
   splits: [train, test]
 
 paths:
-  results: results
-  cache: results/cache
+  results: auto                         # 'auto' -> /kaggle/working/results, /content/results, or ./results
+  cache: auto                           # 'auto' -> <results>/cache
   run_name: default
 
 clip:

@@ -30,6 +30,9 @@ def load_config(path: str | Path, overrides: list[str] | None = None) -> DictCon
     cfg = _load_with_defaults(path, seen=set())
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
+    from .env import apply_to_config      # imported late: env.py imports logging
+
+    apply_to_config(cfg)
     return cfg  # type: ignore[return-value]
 
 
