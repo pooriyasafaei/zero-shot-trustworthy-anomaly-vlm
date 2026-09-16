@@ -180,6 +180,79 @@ class QwenScorer(Scorer):
             p_yes = float(torch.sigmoid(yes - no))
         return sample, p_yes
 
+    # -- direct causal-audit probe ----------------------------------------
+    #: Short prompt used by :meth:`score_direct_verdict`. Semantically the same task
+    #: as the structured prompt, but it asks only for the verdict, so the answer
+    #: token is the *next* token and one forward pass suffices. Bumping this string
+    #: must bump PROBE_VERSION, because cached scores are keyed on it.
+    DIRECT_VERDICT_PROMPT = (
+        "You are an expert industrial quality inspector.\n"
+        "Inspect this manufactured {class_name}.\n"
+        "Based only on clearly visible evidence, is the item defective?\n"
+        "Respond with exactly one answer: YES or NO."
+    )
+    PROBE_VERSION = "direct-verdict-v1"
+
+    @torch.inference_mode()
+    def score_direct_verdict(self, image: Image.Image, class_name: str) -> dict:
+        """One forward pass; read P(YES) from the next-token logits.
+
+        The structured scorer generates a full OBSERVATION/DEFECT_TYPE/.../ANSWER
+        block before its verdict is available. A causal audit needs the verdict for
+        every intervention - 21 of them per image at K=19 - and does not need the
+        prose, so generating 120 tokens each time would dominate the runtime for no
+        scientific gain.
+
+        This is a *different measurement* from the structured scorer, not a faster
+        version of it: a model asked to answer immediately may answer differently
+        from one that reasons first. The audit therefore reports the correlation
+        between the two rather than assuming they agree.
+
+        Returns ``audit_p_yes``, ``audit_logit`` (= ``log P(YES)/P(NO)``) and probe
+        metadata. Leaves the scorer's own state and outputs untouched.
+        """
+        self.load()
+        prompt = self.DIRECT_VERDICT_PROMPT.format(class_name=class_name)
+        inputs = self._inputs(image, prompt)
+        logits = self._model(**inputs).logits[0, -1].float()
+        log_probs = torch.log_softmax(logits, dim=-1)
+        log_yes = torch.logsumexp(log_probs[self._yes_ids], dim=0)
+        log_no = torch.logsumexp(log_probs[self._no_ids], dim=0)
+        audit_logit = float(log_yes - log_no)
+        top_id = int(torch.argmax(logits))
+        return {
+            "audit_p_yes": float(torch.sigmoid(log_yes - log_no)),
+            "audit_logit": audit_logit,
+            "audit_log_yes": float(log_yes),
+            "audit_log_no": float(log_no),
+            "audit_top_token": self._processor.tokenizer.decode([top_id]),
+            "audit_top_is_verdict": bool(top_id in set(self._yes_ids) | set(self._no_ids)),
+            "probe_version": self.PROBE_VERSION,
+            "parse_ok": True,        # a logit read cannot fail to parse
+        }
+
+    @torch.inference_mode()
+    def score_generated_verdict(self, image: Image.Image, class_name: str) -> dict:
+        """Confirmation arm: the existing structured path, reported in probe schema.
+
+        Slower, but it exercises the same generation the rest of the repository
+        scores with, so a pilot conclusion can be checked against it.
+        """
+        self.load()
+        sample, p_yes = self._greedy_with_logprob(image, build_prompt(class_name))
+        parse_ok = p_yes is not None
+        return {
+            "audit_p_yes": float(p_yes) if parse_ok else float("nan"),
+            "audit_logit": (float(np.log(max(p_yes, 1e-9) / max(1 - p_yes, 1e-9)))
+                            if parse_ok else float("nan")),
+            "audit_top_token": "", "audit_top_is_verdict": parse_ok,
+            "probe_version": "generated-verdict-v1",
+            "parse_ok": parse_ok,
+            "observation": sample.observation,
+            "predicted_defect": sample.defect_type,
+            "predicted_location": sample.location,
+        }
+
     @torch.no_grad()
     def _sample(self, image: Image.Image, prompt_text: str, n: int) -> list[VlmSample]:
         inputs = self._inputs(image, prompt_text)
