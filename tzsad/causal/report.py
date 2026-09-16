@@ -103,12 +103,23 @@ def artifact_control_table(interventions: pd.DataFrame, records: pd.DataFrame) -
 
     If they do, a positive CEE could be a reaction to a worse splice rather than to
     the absence of the defect, and the headline has to be qualified accordingly.
+
+    The comparison is restricted to images that produced **both** arms. An image
+    whose mask is too large to translate contributes a defect-removal row and no
+    placebos, so pooling over everything would compare a defect mean that includes
+    those large masks against a placebo mean that cannot - which shows up as an
+    area mismatch that is pure population composition, not a broken invariant.
     """
     iv = interventions[interventions["intervention_type"].isin(["defect_removed", "placebo"])]
+    paired = set(iv[iv.intervention_type == "defect_removed"].image_id) & \
+        set(iv[iv.intervention_type == "placebo"].image_id)
+    iv = iv[iv.image_id.isin(paired)]
+
     rows = []
     for kind, g in iv.groupby("intervention_type", sort=True):
         rows.append({
             "intervention_type": kind, "n": int(len(g)),
+            "n_images": int(g.image_id.nunique()),
             "seam_score_mean": float(g["seam_score"].mean()),
             "seam_score_median": float(g["seam_score"].median()),
             "edit_energy_mean": float(g["edit_energy"].mean()),
@@ -117,14 +128,36 @@ def artifact_control_table(interventions: pd.DataFrame, records: pd.DataFrame) -
         })
     table = pd.DataFrame(rows)
 
+    # Paired per-image ratios: every image contributes one defect fill and its own
+    # placebo fills, so this is the comparison a reviewer actually wants.
+    defect = iv[iv.intervention_type == "defect_removed"].set_index("image_id")
+    plac = iv[iv.intervention_type == "placebo"].groupby("image_id")
+    seam_ratios, energy_ratios = [], []
+    for image_id, pg in plac:
+        if image_id not in defect.index:
+            continue
+        d = defect.loc[image_id]
+        ps, pe = float(pg["seam_score"].median()), float(pg["edit_energy"].median())
+        if ps > 0:
+            seam_ratios.append(float(d["seam_score"]) / ps)
+        if pe > 0:
+            energy_ratios.append(float(d["edit_energy"]) / pe)
+    table.loc[len(table)] = {
+        "intervention_type": "PAIRED_median_seam_ratio", "n": len(seam_ratios),
+        "n_images": len(seam_ratios),
+        "seam_score_mean": float(np.median(seam_ratios)) if seam_ratios else float("nan")}
+    table.loc[len(table)] = {
+        "intervention_type": "PAIRED_median_edit_energy_ratio", "n": len(energy_ratios),
+        "n_images": len(energy_ratios),
+        "seam_score_mean": float(np.median(energy_ratios)) if energy_ratios else float("nan")}
+
     # Is the per-image effect merely tracking how bad that image's splice was?
+    # A positive correlation would be the damning one.
     ok = records[records.get("status", "ok") == "ok"] if "status" in records else records
     valid = ok.dropna(subset=["cee"])
     rho = float("nan")
     if "seam_ratio" in valid.columns:
         valid = valid[np.isfinite(valid["seam_ratio"].to_numpy(dtype=float))]
-        # Spearman is undefined when either input is constant, which happens on
-        # uniform synthetic data; report NaN rather than emitting a warning and a nan.
         if len(valid) >= 4 and valid["cee"].nunique() > 1 and valid["seam_ratio"].nunique() > 1:
             from scipy import stats
             rho = float(stats.spearmanr(valid["cee"], valid["seam_ratio"]).statistic)

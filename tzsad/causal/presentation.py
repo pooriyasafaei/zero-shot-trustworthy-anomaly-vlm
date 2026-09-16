@@ -105,12 +105,14 @@ def write_presentation_summary(
     resolvable = int(row.get("n_resolvable_at_005", 0))
     support_rate = float(row.get("supported_at_005_rate", float("nan")))
 
-    seam_ratio = float("nan")
-    if len(artifacts):
-        d = artifacts[artifacts.intervention_type == "defect_removed"]
-        p = artifacts[artifacts.intervention_type == "placebo"]
-        if len(d) and len(p) and float(p.iloc[0]["seam_score_mean"]):
-            seam_ratio = float(d.iloc[0]["seam_score_mean"]) / float(p.iloc[0]["seam_score_mean"])
+    def _artifact(name: str) -> float:
+        if not len(artifacts):
+            return float("nan")
+        row = artifacts[artifacts.intervention_type == name]
+        return float(row.iloc[0]["seam_score_mean"]) if len(row) else float("nan")
+
+    seam_ratio = _artifact("PAIRED_median_seam_ratio")
+    energy_ratio = _artifact("PAIRED_median_edit_energy_ratio")
     spearman_row = artifacts[artifacts.intervention_type.astype(str).str.startswith("SPEARMAN")] \
         if len(artifacts) else pd.DataFrame()
     seam_rho = float(spearman_row.iloc[0]["seam_score_mean"]) if len(spearman_row) else float("nan")
@@ -144,6 +146,21 @@ def write_presentation_summary(
         findings.append(
             f"- Median empirical matched-placebo tail probability is {_fmt(med_p, '.4f')} "
             f"with a median of {med_k:.0f} valid placebos per image.")
+        yes_rate = float(row.get("frac_original_predicted_yes", float("nan")))
+        if np.isfinite(yes_rate):
+            findings.append(
+                f"- **Detector context:** every target here is anomalous, yet the direct probe "
+                f"called only {yes_rate:.0%} of them defective. The audit therefore describes a "
+                f"decision process that is itself close to chance on this subset, which limits "
+                f"how much any causal conclusion can carry.")
+        if len(by_category) > 1 and "cee_median" in by_category:
+            best = by_category.loc[by_category["cee_median"].idxmax()]
+            worst = by_category.loc[by_category["cee_median"].idxmin()]
+            findings.append(
+                f"- **Strong heterogeneity across categories:** {best['group']} reaches a median "
+                f"CEE of {_fmt(best['cee_median'])} while {worst['group']} sits at "
+                f"{_fmt(worst['cee_median'])}. The pooled median hides this; the per-category "
+                f"table is the one to read.")
         if resolvable:
             findings.append(
                 f"- Of {resolvable} images with enough placebos to resolve alpha=0.05, "
@@ -154,17 +171,25 @@ def write_presentation_summary(
         if np.isfinite(seam_ratio):
             if seam_ratio > 1.5:
                 findings.append(
-                    f"- CAUTION: real-defect reconstructions are seamier than placebo ones "
-                    f"(ratio {seam_ratio:.2f}). Part of the measured effect could be a reaction "
-                    f"to reconstruction artifacts rather than to the missing defect.")
+                    f"- **CAUTION — the central confound.** Real-defect reconstructions are "
+                    f"seamier than their own placebos (paired median ratio {seam_ratio:.2f}"
+                    + (f", edit-energy ratio {energy_ratio:.2f}" if np.isfinite(energy_ratio) else "")
+                    + "). This is partly intrinsic: a defect region is by definition visually "
+                    "distinctive, so replacing it necessarily changes more pixels than "
+                    "replacing a patch of ordinary texture. Some of the measured effect may "
+                    "therefore be a reaction to the edit itself rather than to the absence of "
+                    "the defect.")
             else:
                 findings.append(
                     f"- Reconstruction artifact severity is comparable between the real-defect "
-                    f"and placebo edits (seam ratio {seam_ratio:.2f}), so the effect is not "
-                    f"obviously explained by splice quality.")
+                    f"and placebo edits (paired median seam ratio {seam_ratio:.2f}), so the "
+                    f"effect is not obviously explained by splice quality.")
         if np.isfinite(seam_rho):
-            findings.append(f"- Spearman correlation between CEE and seam ratio is "
-                            f"{_fmt(seam_rho, '+.3f')}.")
+            direction = ("does not support" if seam_rho < 0 else "is consistent with")
+            findings.append(
+                f"- Across images, the Spearman correlation between CEE and the seam ratio is "
+                f"{_fmt(seam_rho, '+.3f')}. A positive value would mean the effect grows with "
+                f"artifact severity; this value {direction} the artifact explanation.")
 
     lines = [
         "# CERM-AD Stage I — Causal Visual Evidence Verification",
