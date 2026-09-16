@@ -1,0 +1,39 @@
+# CERM-AD Stage I shared settings. Inherits the repository's data/path/env
+# conventions from base.yaml so data.root stays 'auto' and resolves per machine.
+defaults: [base.yaml]
+
+causal:
+  # --- experiment shape -------------------------------------------------
+  k_placebos: 19              # 1/(19+1) = 0.05, the finest tail this can resolve
+  mask_source: gt             # gt (oracle) | bank_map (planned; see docs/CERM_AD.md)
+  score_mode: direct_verdict  # direct_verdict (1 forward pass) | generated_verdict
+  max_targets_per_folder: 2   # cap per (category, defect_type) for runtime
+
+  # --- counterfactual reconstruction ------------------------------------
+  feather_px: 3               # inward-only blend width; never touches outside pixels
+  dilate_for_donor: 16        # defect neighbourhood excluded from donor matching
+  max_donor_candidates: 80    # cap on the train/good pool searched per target
+
+  # --- matched placebo search -------------------------------------------
+  max_iou: 0.01               # a placebo overlapping the defect is not a control
+  ring_width: 12              # context ring compared between candidate and defect
+  min_separation: 8           # keeps the K placebos distinct placements
+  candidate_stride: 8         # deterministic sweep step over feasible translations
+  max_candidates: 600         # bounds the search so cost does not scale with image area
+  match_quantile: 0.4         # keep the most context-similar 40% as the matched pool
+  min_pool: 0                 # 0 disables the "too few matches" refusal
+  use_gradient: true          # include gradient stats in the context descriptor
+
+  # --- outputs and scale -------------------------------------------------
+  save_images: true
+  save_placebo_images: 2      # per target; all placebos are still scored
+  workers: auto               # 'auto' = one worker per visible GPU
+  compare_with: ""            # optional existing qwen records for probe agreement
+
+qwen:
+  model_id: Qwen/Qwen2.5-VL-3B-Instruct
+  dtype: auto                 # fp16 on pre-Ampere (T4); bf16 there is emulated and slow
+  max_pixels: 401408          # 512 * 28 * 28, the T4-friendly visual-token cap
+  max_new_tokens: 120         # only used by the generated_verdict confirmation arm
+  n_samples: 1                # no sampling: Stage I needs verdict logits, not prose
+  prompt_variants: []

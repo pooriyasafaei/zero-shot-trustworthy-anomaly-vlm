@@ -1,0 +1,17 @@
+# Tiny sanity check. Runs on CPU if a probe is stubbed; a few forward passes on GPU.
+defaults: [cerm_base.yaml]
+
+paths:
+  run_name: cerm_smoke
+
+data:
+  categories: [bottle]
+  subset: n_per_folder=2
+  cal_subset: n_per_folder=8   # donor bank only needs a handful of normals here
+
+causal:
+  k_placebos: 3
+  max_targets_per_folder: 1
+  candidate_stride: 24         # coarse sweep: speed over placebo quality
+  save_placebo_images: 1
+  workers: 1

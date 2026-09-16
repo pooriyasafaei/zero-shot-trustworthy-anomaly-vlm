@@ -1,0 +1,16 @@
+# Larger follow-up run. Not for tonight.
+defaults: [cerm_base.yaml]
+
+paths:
+  run_name: cerm_full
+
+data:
+  categories: null              # every category present on disk
+  subset: full
+  cal_subset: n_per_folder=100
+
+causal:
+  k_placebos: 31                # finer tail: 1/32 = 0.031
+  max_targets_per_folder: 8
+  candidate_stride: 6           # denser placebo search
+  workers: auto

@@ -1,0 +1,22 @@
+# THE PILOT. Oracle GT-mask causal audit over four categories.
+#
+# Uses the repository's deterministic subset system with n_per_folder=5 so the
+# image ids line up with existing qwen_subset runs, then caps to 2 anomalous
+# images per defect folder for runtime.
+defaults: [cerm_base.yaml]
+
+paths:
+  run_name: cerm_pilot
+
+data:
+  categories: [bottle, carpet, pill, screw]
+  subset: n_per_folder=5
+  cal_subset: n_per_folder=60   # donor bank: train/good only, capped for speed
+
+causal:
+  k_placebos: 19
+  max_targets_per_folder: 2
+  score_mode: direct_verdict
+  mask_source: gt
+  save_images: true
+  workers: auto
