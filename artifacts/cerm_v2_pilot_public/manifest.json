@@ -1,0 +1,242 @@
+{
+  "argv": [
+    "scripts/run_cerm_v2.py",
+    "--config",
+    "configs/cerm_v2_pilot.yaml",
+    "--phase",
+    "direct",
+    "--workers",
+    "auto"
+  ],
+  "config": {
+    "causal": {
+      "candidate_stride": 8,
+      "compare_with": "",
+      "dilate_for_donor": 16,
+      "feather_px": 3,
+      "k_placebos": 19,
+      "mask_source": "gt",
+      "match_quantile": 0.4,
+      "max_candidates": 600,
+      "max_donor_candidates": 80,
+      "max_iou": 0.01,
+      "max_targets_per_folder": 2,
+      "min_pool": 0,
+      "min_separation": 8,
+      "ring_width": 12,
+      "save_images": true,
+      "save_placebo_images": 2,
+      "score_mode": "direct_verdict",
+      "use_gradient": true,
+      "workers": "auto"
+    },
+    "cerm_v2": {
+      "artifact_match_quantile": 0.3,
+      "artifact_max_candidates": 1000,
+      "batch_size": 6,
+      "k_artifact": 19,
+      "k_context": 19,
+      "k_occlusion": 9,
+      "k_random": 19,
+      "k_sham": 9,
+      "max_sham_sources": 60,
+      "sham_match_quantile": 0.3,
+      "structured_p0": true,
+      "structured_p1_cases": 10
+    },
+    "clip": {
+      "aggregate": "mean_embedding",
+      "allow_download": true,
+      "backbones": [
+        {
+          "name": "ViT-B-16",
+          "pretrained": "openai"
+        }
+      ],
+      "batch_size": 32,
+      "prompt_set": "base",
+      "tau": 0.01,
+      "windows": {
+        "bank_k": 3,
+        "enabled": false,
+        "image_size": 336,
+        "map_size": 128,
+        "position_aware": true,
+        "scales": [
+          0.5,
+          0.3333
+        ],
+        "stride_frac": 0.5
+      }
+    },
+    "conformal": {
+      "delta": 0.05,
+      "deltas": [
+        0.01,
+        0.05,
+        0.1,
+        0.2
+      ],
+      "n_cal": null,
+      "n_cal_sweep": [
+        25,
+        50,
+        100,
+        200,
+        null
+      ],
+      "prediction_sets": {
+        "delta": 0.05,
+        "enabled": false
+      },
+      "randomized": false,
+      "tau_u": 1.0,
+      "uncertainty_mode": "boundary",
+      "uncertainty_modes": [
+        "boundary",
+        "log",
+        "symmetric",
+        "entropy"
+      ]
+    },
+    "corruption": {
+      "corruptions": [
+        "gaussian_noise",
+        "defocus_blur",
+        "motion_blur",
+        "jpeg_compression",
+        "brightness",
+        "contrast",
+        "fog"
+      ],
+      "severities": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "data": {
+      "cal_subset": "n_per_folder=60",
+      "categories": [
+        "bottle",
+        "carpet",
+        "pill",
+        "screw"
+      ],
+      "root": "/kaggle/input/datasets/ipythonx/mvtec-ad",
+      "splits": [
+        "train",
+        "test"
+      ],
+      "subset": "n_per_folder=5"
+    },
+    "eval": {
+      "coverages": [
+        0.5,
+        0.7,
+        0.8,
+        0.9,
+        1.0
+      ],
+      "n_bins": 15,
+      "n_boot": 1000,
+      "risks": [
+        0.05,
+        0.1,
+        0.2
+      ]
+    },
+    "fusion": {
+      "combiner": "weighted_geometric",
+      "synthetic": {
+        "method": "cutpaste",
+        "n_per_category": 50
+      },
+      "uncertainty_cols": [
+        "u_conformal"
+      ],
+      "weights": {}
+    },
+    "hallucination": {
+      "arm": "language_grounding",
+      "calibrate_on": "anomaly_score",
+      "enabled": false,
+      "eq4_flag": {
+        "alpha": 1.5,
+        "anom_quantile": 0.9,
+        "cmcs_quantile": 0.1,
+        "enabled": true
+      },
+      "iou_sweep": [
+        0.0,
+        0.01,
+        0.05,
+        0.1,
+        0.2,
+        0.3
+      ],
+      "iou_threshold": 0.05,
+      "top_frac": 0.05
+    },
+    "paths": {
+      "cache": "/kaggle/working/results/cache",
+      "results": "/kaggle/working/results",
+      "run_name": "cerm_v2_pilot"
+    },
+    "qwen": {
+      "dtype": "auto",
+      "max_new_tokens": 120,
+      "max_pixels": 401408,
+      "mode": "logprob",
+      "model_id": "Qwen/Qwen2.5-VL-3B-Instruct",
+      "n_samples": 1,
+      "prompt_variants": [],
+      "temperature": 0.6,
+      "top_p": 0.9
+    },
+    "seed": 1234,
+    "uncertainty": {
+      "estimators": [
+        "prompt_std",
+        "prompt_std_z",
+        "manifold_knn",
+        "manifold_knn_raw"
+      ],
+      "manifold_k": 5,
+      "semantic_entropy": {
+        "backend": "embedding",
+        "embed_threshold": 0.85,
+        "entail_threshold": 0.5
+      },
+      "tta": {
+        "enabled": false,
+        "views": [
+          "hflip",
+          "vflip",
+          "crop90",
+          "crop80",
+          "jitter"
+        ]
+      }
+    }
+  },
+  "env": {
+    "cuda_available": true,
+    "gpus": [
+      "Tesla T4",
+      "Tesla T4"
+    ],
+    "numpy": "2.0.2",
+    "open_clip": "3.3.0",
+    "pandas": "2.3.3",
+    "platform": "Linux-6.18.48+-x86_64-with-glibc2.35",
+    "python": "3.12.13",
+    "sklearn": "1.6.1",
+    "torch": "2.10.0+cu128",
+    "transformers": "5.0.0"
+  },
+  "git_sha": "nogit",
+  "seed": 1234
+}

@@ -1,0 +1,8 @@
+comparison,type,n_pairs,stat,ci_lo,ci_hi,frac_positive,wilcoxon_p,note,n_a,n_b
+"A: artifact imbalance, context-only minus artifact-matched",paired,37.0,0.10592544477396235,0.03700728652853829,0.2322826045570643,0.8108108108108109,0.00018856643873732537,> 0 means artifact matching reduced imbalance,,
+"B: CEE_N, context-only minus artifact-matched",paired,37.0,-0.0023598074913024902,-0.015127897262573242,0.0013255476951599121,0.43243243243243246,0.21885200531687587,> 0 means the effect shrank under stronger controls,,
+"B2: CEE_N, random minus context-only",paired,37.0,-0.0005971193313598633,-0.014858901500701904,-0.0004031658172607422,0.2972972972972973,0.10051859231316485,,,
+C1: delta_defect minus median artifact-matched placebo delta (= CEE_N),paired,37.0,0.08236199617385864,-0.013875246047973633,0.21974211931228638,0.6486486486486487,0.004820436588488519,,,
+C2: delta_insert_defect minus median sham delta (= CEE_S),paired,40.0,0.15560558438301086,0.0967576801776886,0.2296232283115387,0.825,5.723268259316683e-08,,,
+"D: CEE_N(artifact), original YES minus original NO",independent groups,,0.25157618522644043,-0.07683759927749634,0.7331392467021942,,,difference of medians,18.0,19.0
+"E: CEE_S, original YES minus original NO",independent groups,,0.13411980867385864,0.001894235610961914,0.49025630950927734,,,difference of medians,19.0,21.0

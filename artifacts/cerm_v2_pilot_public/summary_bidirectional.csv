@@ -1,0 +1,8 @@
+group,N,N_determined,n_bidirectional,frac_bidirectional,n_necessity_only,frac_necessity_only,n_sufficiency_only,frac_sufficiency_only,n_neither,frac_neither,n_undetermined,frac_undetermined
+ALL,40,37,22,0.5945945945945946,2,0.05405405405405406,9,0.24324324324324326,4,0.10810810810810811,3,
+category=bottle,6,5,5,1.0,0,0.0,0,0.0,0,0.0,1,
+category=carpet,10,10,10,1.0,0,0.0,0,0.0,0,0.0,0,
+category=pill,14,12,4,0.3333333333333333,0,0.0,6,0.5,2,0.16666666666666666,2,
+category=screw,10,10,3,0.3,2,0.2,3,0.3,2,0.2,0,
+original_verdict=NO,21,19,9,0.47368421052631576,2,0.10526315789473684,5,0.2631578947368421,3,0.15789473684210525,2,
+original_verdict=YES,19,18,13,0.7222222222222222,0,0.0,4,0.2222222222222222,1,0.05555555555555555,1,

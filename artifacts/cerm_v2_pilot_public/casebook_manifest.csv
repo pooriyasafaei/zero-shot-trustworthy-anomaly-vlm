@@ -1,0 +1,11 @@
+slot,image_id,category,rule,criterion_value
+best_bidirectional,carpet/test/metal_contamination/005,carpet,"among targets whose necessity AND sufficiency artifact imbalance are at or below the run median, maximise min(robust CEE_N z, robust CEE_S z), preferring CEE_N>0 and CEE_S>0",39.374457365716374
+necessity_not_sufficiency,screw/test/thread_side/006,screw,"CEE_N>0 and CEE_S<=0, maximise robust CEE_N z - robust CEE_S z (fallback: maximise CEE_N - CEE_S)",4.436795114370864
+failure_ungrounded,pill/test/scratch/004,pill,"minimise max(robust CEE_N z, robust CEE_S z): weakest evidence in both directions",-1.4754025810315856
+missed_anomaly,carpet/test/cut/004,carpet,original direct verdict NO; maximise |robust CEE_N z|,10.547000907714308
+category_strong,carpet/test/thread/008,carpet,category with the highest median CEE_N; its target with the highest CEE_N,1.516315758228302
+category_weak,pill/test/crack/010,pill,category with the lowest median CEE_N; its target with the lowest CEE_N,-0.5142182111740112
+artifact_control,screw/test/manipulated_front/000,screw,maximise the paired reduction in artifact imbalance (context-only minus artifact-matched),1.6674073498824615
+spread_q50,bottle/test/broken_small/004,bottle,P1 padding: target whose CEE_N is closest to its 50th percentile,-0.0
+spread_q10,pill/test/faulty_imprint/006,pill,P1 padding: target whose CEE_N is closest to its 10th percentile,-0.012640643119812014
+spread_q90,carpet/test/cut/000,carpet,P1 padding: target whose CEE_N is closest to its 90th percentile,-0.10566111803054845

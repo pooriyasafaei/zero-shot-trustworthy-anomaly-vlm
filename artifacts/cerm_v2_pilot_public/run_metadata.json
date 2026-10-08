@@ -1,0 +1,24 @@
+{
+ "branch": "experiment/cerm-ad-v2-controls",
+ "git_sha": "4b13bba234c33fb428e3c8b54272a7ae5447a177 (deployed tree)",
+ "model_id": "Qwen/Qwen2.5-VL-3B-Instruct",
+ "score_mode": "direct_verdict",
+ "mask_source": "gt (oracle ground-truth masks)",
+ "N_targets": 40,
+ "categories": "bottle, carpet, pill, screw",
+ "forward_images_total": 3002,
+ "unique_images_scored": 2945,
+ "structured_generations": 87,
+ "runtime": "direct_minutes 16.72 min, structured_minutes 2.36 min",
+ "gpu": "2 x Tesla T4",
+ "seed": 1234,
+ "transformers": "5.0.0",
+ "k": {
+  "random": 19,
+  "context": 19,
+  "artifact": 19,
+  "occlusion": 9,
+  "sham": 9
+ },
+ "generated_at": "2026-10-08 01:20:42"
+}

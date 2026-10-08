@@ -1,0 +1,2 @@
+group,N,N_with_shams,median_delta_insert_defect,median_sham_delta,median_cee_s,cee_s_ci_lo,cee_s_ci_hi,frac_cee_s_positive,frac_insert_beats_all_shams,median_empirical_sham_tail,median_robust_z,median_seam_ratio,median_edit_ratio,median_artifact_imbalance,frac_recipient_predicted_yes
+ALL,40,40,0.19900399446487427,0.015451774001121521,0.15560558438301086,0.0967576801776886,0.2296232283115387,0.825,0.625,0.1,3.472402297141713,1.0120714181808281,1.0588049988317894,0.3137353123782596,0.0

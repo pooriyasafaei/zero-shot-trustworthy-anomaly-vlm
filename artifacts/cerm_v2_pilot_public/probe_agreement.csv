@@ -1,0 +1,2 @@
+N_targets,N_structured,N_parsed,structured_parse_rate,spearman_p_yes,pearson_p_yes,verdict_agreement,direct_sensitivity,structured_sensitivity,note
+40,40,40,1.0,0.3855534709193247,0.4265620366620512,0.475,0.475,0.85,"all targets are anomalous, so 'sensitivity' is recall on anomalies, not accuracy"
