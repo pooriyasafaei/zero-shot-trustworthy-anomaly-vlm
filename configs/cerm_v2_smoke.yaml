@@ -1,0 +1,19 @@
+# Tiny end-to-end check of CERM-AD Stage I+ (a few minutes of GPU at most).
+defaults: [cerm_smoke.yaml]
+
+paths:
+  run_name: cerm_v2_smoke
+
+cerm_v2:
+  k_random: 3
+  k_context: 3
+  k_artifact: 3
+  artifact_max_candidates: 120
+  artifact_match_quantile: 0.3
+  k_occlusion: 2
+  k_sham: 2
+  max_sham_sources: 8
+  sham_match_quantile: 0.5
+  batch_size: 4
+  structured_p0: true
+  structured_p1_cases: 1

@@ -1,0 +1,31 @@
+# CERM-AD Stage I+ pilot: bidirectional, artifact-matched causal verification.
+#
+# Inherits cerm_pilot.yaml unchanged - same categories, same subset, same seed, same
+# per-folder cap - so select_targets() returns exactly the Stage-I pilot targets and
+# every v2 record pairs one-to-one with a v1 record. Only the run name and the new
+# v2 arms are added here. All v2 knobs were fixed before any Qwen output was seen.
+defaults: [cerm_pilot.yaml]
+
+paths:
+  run_name: cerm_v2_pilot
+
+cerm_v2:
+  # --- necessity arms (all share the Stage-I donor and defect-removal image) --
+  k_random: 19                  # A: same translated mask, uniform over feasible, no matching
+  k_context: 19                 # B: Stage-I context-matched placebos, reproduced exactly
+  k_artifact: 19                # C: context + artifact matched placebos (new)
+  artifact_max_candidates: 1000 # feasible translations evaluated for artifact matching
+  artifact_match_quantile: 0.3  # matched pool = best 30% by composite distance
+  k_occlusion: 9                # D: occlusion-style baseline controls
+
+  # --- sufficiency arm ---------------------------------------------------
+  k_sham: 9                     # artifact-matched normal-patch sham insertions
+  max_sham_sources: 60          # train/good images considered as sham sources
+  sham_match_quantile: 0.3
+
+  # --- scoring -----------------------------------------------------------
+  batch_size: 6                 # images per forward pass (one target, one resolution)
+
+  # --- confirmation arm (structured generation) ---------------------------
+  structured_p0: true           # structured scorer on every original target
+  structured_p1_cases: 10       # casebook targets x 6 roles
