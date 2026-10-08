@@ -251,7 +251,58 @@ class QwenScorer(Scorer):
             "observation": sample.observation,
             "predicted_defect": sample.defect_type,
             "predicted_location": sample.location,
+            "predicted_confidence": sample.confidence,
+            "generated_vote": sample.vote,
+            "generation_text": sample.text,
         }
+
+    @torch.inference_mode()
+    def score_direct_verdict_batch(self, images: Sequence[Image.Image],
+                                   class_name: str) -> list[dict]:
+        """:meth:`score_direct_verdict` for several images in one forward pass.
+
+        Same prompt, same token read-out, same output schema. Padding is on the
+        left so the last position is the real next-token position for every row;
+        in the causal audit every image in a batch comes from one target and has
+        the same resolution, so in practice the rows are equal length and there is
+        no padding at all. fp16 batched kernels can differ from the unbatched path
+        in the last bits, which the v2 smoke run measures and logs.
+        """
+        if len(images) == 1:
+            return [self.score_direct_verdict(images[0], class_name)]
+        self.load()
+        prompt = self.DIRECT_VERDICT_PROMPT.format(class_name=class_name)
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": images[0]}, {"type": "text", "text": prompt}]}]
+        chat = self._processor.apply_chat_template(messages, tokenize=False,
+                                                   add_generation_prompt=True)
+        tok = self._processor.tokenizer
+        side = tok.padding_side
+        tok.padding_side = "left"
+        try:
+            inputs = self._processor(text=[chat] * len(images), images=list(images),
+                                     padding=True, return_tensors="pt").to(self._model.device)
+        finally:
+            tok.padding_side = side
+        logits = self._model(**inputs).logits[:, -1].float()
+        log_probs = torch.log_softmax(logits, dim=-1)
+        log_yes = torch.logsumexp(log_probs[:, self._yes_ids], dim=1)
+        log_no = torch.logsumexp(log_probs[:, self._no_ids], dim=1)
+        verdict = set(self._yes_ids) | set(self._no_ids)
+        out = []
+        for i in range(len(images)):
+            top_id = int(torch.argmax(logits[i]))
+            out.append({
+                "audit_p_yes": float(torch.sigmoid(log_yes[i] - log_no[i])),
+                "audit_logit": float(log_yes[i] - log_no[i]),
+                "audit_log_yes": float(log_yes[i]),
+                "audit_log_no": float(log_no[i]),
+                "audit_top_token": tok.decode([top_id]),
+                "audit_top_is_verdict": bool(top_id in verdict),
+                "probe_version": self.PROBE_VERSION,
+                "parse_ok": True,
+            })
+        return out
 
     @torch.no_grad()
     def _sample(self, image: Image.Image, prompt_text: str, n: int) -> list[VlmSample]:
