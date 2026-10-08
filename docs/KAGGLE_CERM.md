@@ -188,3 +188,54 @@ to the next run makes the pipeline resume.
 `cerm_full.yaml` uses K=31, every category and 8 targets per defect folder.
 `--budget-minutes` stops it starting work it cannot finish, leaving time to write
 the report.
+
+---
+
+# CERM-AD Stage I+ (v2): bidirectional, artifact-matched controls
+
+Same setup cells 1–5 as above (clone the `experiment/cerm-ad-v2-controls` branch
+instead). Method: `docs/CERM_AD_V2.md`.
+
+## v2-1. Smoke (about 2 minutes of GPU)
+
+```python
+!cd /kaggle/working/tzsad && python scripts/run_cerm_v2.py \
+    --config configs/cerm_v2_smoke.yaml --workers 1 2>&1 | tail -15
+```
+
+## v2-2. The pilot — same 40 targets as v1, both GPUs
+
+```python
+!cd /kaggle/working/tzsad && nohup python scripts/run_cerm_v2.py \
+    --config configs/cerm_v2_pilot.yaml --workers auto > /kaggle/working/cerm_v2.log 2>&1 &
+```
+
+Runs three phases: `direct` (all arms, ~80 images per target, ≈18 min on 2×T4),
+`structured` (P0 originals + P1 casebook, ≈5 min), `report` (CPU, ≈1 min).
+Monitor:
+
+```python
+!grep -h "\] " /kaggle/working/results/cerm_v2_pilot/worker_direct*.log | tail -4
+!nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader
+```
+
+Resume after any interruption: re-run the same command. Single phases:
+`--phase direct | structured | report` (`report` needs no GPU).
+
+## v2-3. Outputs
+
+```
+/kaggle/working/results/cerm_v2_pilot/
+  PRESENTATION_RESULTS.md              <- read first
+  CERM_V2_PRESENTATION_BUNDLE.zip      <- hand this to whoever builds the slides
+  summary_necessity_overall.csv / _by_category.csv
+  summary_sufficiency_overall.csv / _by_category.csv
+  summary_bidirectional.csv, artifact_balance.csv, method_ablation.csv,
+  paired_comparisons.csv, probe_agreement.csv, p1_sign_agreement.csv,
+  casebook_manifest.csv, related_work_table.csv
+  causal_records_v2.parquet (one row per target), interventions_v2.parquet (one row per image)
+  structured_records.parquet
+  figures/  (12 presentation figures + ablation_story.png)
+  casebook/ (case_*.png, structured_examples.md)
+  public/   (numbers + dataset-free plots only; this is what gets committed)
+```

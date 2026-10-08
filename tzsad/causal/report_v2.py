@@ -93,7 +93,11 @@ def fig_artifact_balance(ok: pd.DataFrame, out: Path) -> Path:
     ax.set_ylabel("artifact imbalance\n|log seam ratio| + |log edit ratio|")
     ax.axhline(0, color="black", lw=0.8)
     ax.set_title(f"Paired per-target imbalance (N={int(keep.sum())})")
-    ax.legend(loc="upper right")
+    from matplotlib.lines import Line2D
+    handles = [Line2D([], [], color="black", lw=3.5, marker="o", label="median")]
+    handles += [Line2D([], [], color=category_color(c), lw=2, label=c)
+                for c in sorted(ok.loc[keep, "category"].unique())]
+    ax.legend(handles=handles, loc="upper right")
 
     ax = axes[1]
     for arm, marker in (("context", "o"), ("artifact", "D")):
@@ -151,15 +155,23 @@ def fig_quadrant(ok: pd.DataFrame, out: Path) -> Path:
     ax.axvline(0, color="black", lw=1)
     n = len(d)
     q = d["quadrant"].value_counts()
-    for label, (x, y, ha, va) in {"bidirectional": (0.98, 0.98, "right", "top"),
-                                  "sufficiency_only": (0.02, 0.98, "left", "top"),
-                                  "neither": (0.02, 0.02, "left", "bottom"),
-                                  "necessity_only": (0.98, 0.02, "right", "bottom")}.items():
+    # Keep the origin away from the frame so corner labels never sit on an axis line.
+    for get, setter, col in ((ax.get_xlim, ax.set_xlim, "cee_n_artifact"),
+                             (ax.get_ylim, ax.set_ylim, "cee_s")):
+        vals = d[col].to_numpy(float)
+        span = max(np.ptp(vals) if len(vals) else 1.0, 0.5)
+        setter(min(vals.min() if len(vals) else 0, 0) - 0.18 * span,
+               max(vals.max() if len(vals) else 0, 0) + 0.18 * span)
+    box = dict(boxstyle="round,pad=0.3", fc="white", ec="#BBBBBB", alpha=0.92)
+    for label, (x, y, ha, va) in {"bidirectional": (0.985, 0.985, "right", "top"),
+                                  "sufficiency_only": (0.015, 0.985, "left", "top"),
+                                  "neither": (0.015, 0.015, "left", "bottom"),
+                                  "necessity_only": (0.985, 0.015, "right", "bottom")}.items():
         nice = {"bidirectional": "BIDIRECTIONALLY GROUNDED",
                 "sufficiency_only": "sufficient, not necessary",
                 "neither": "neither", "necessity_only": "necessary, not sufficient"}[label]
-        ax.text(x, y, f"{nice}\n{int(q.get(label, 0))}/{n}", transform=ax.transAxes,
-                ha=ha, va=va, fontsize=11.5, color="#333333",
+        ax.text(x, y, f"{nice}: {int(q.get(label, 0))}/{n}", transform=ax.transAxes,
+                ha=ha, va=va, fontsize=11.5, color="#222222", bbox=box, zorder=10,
                 fontweight="bold" if label == "bidirectional" else "normal")
     ax.set_xlabel("CEE_N  (necessity, artifact-matched placebos)")
     ax.set_ylabel("CEE_S  (sufficiency, artifact-matched normal shams)")
@@ -271,7 +283,7 @@ def fig_ablation_story(out: Path, numbers: dict) -> Path:
         ("Reverse test", "defect insertion vs\nmatched normal shams", "necessity +\nsufficiency",
          numbers.get("sufficiency")),
     ]
-    fig, ax = plt.subplots(figsize=(17.0, 4.6))
+    fig, ax = plt.subplots(figsize=(17.0, 3.9))
     ax.axis("off")
     ax.set_xlim(0, len(steps))
     ax.set_ylim(0, 1)

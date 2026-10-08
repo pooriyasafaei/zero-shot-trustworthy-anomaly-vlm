@@ -2,6 +2,9 @@
 
 **Status: Stage I implemented and runnable. Stage II is designed here but NOT implemented.**
 
+> Stage I+ (bidirectional, artifact-matched controls) extends this without changing it:
+> see `docs/CERM_AD_V2.md` and `docs/CERM_RELATED_WORK.md`.
+
 ## 1. Motivation
 
 The trustworthiness machinery already in this repository measures two things well:
