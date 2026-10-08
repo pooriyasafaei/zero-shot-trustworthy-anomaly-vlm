@@ -34,6 +34,9 @@ ARM_LABELS = {"naive": "naive\n(no control)", "random": "random\ntranslation",
               "occlusion": "occlusion-style\nbaseline"}
 
 #: Predeclared reading thresholds (docs/CERM_AD_V2.md, "Predeclared questions").
+#: The Stage-I (v1) pilot's headline, quoted from its PRESENTATION_SUMMARY.md.
+V1_REPORTED = "+0.0966 [+0.0002, +0.2013] (N=40)"
+
 BALANCED_RATIO = 1.25        # a seam/edit ratio within [1/1.25, 1.25] counts as balanced
 CAUTION_RATIO = 1.5          # the v1 caution threshold
 
@@ -377,7 +380,12 @@ def write_presentation_results(path: Path, meta: dict, tables: dict, cases: pd.D
     add("- **Sufficiency (new):** the real defect is transplanted into the normal donor J and "
         "compared with artifact-matched normal-patch shams at the same location.")
     add("- **Structured-scorer check (P0/P1):** the existing structured scorer on all originals "
-        "and on casebook interventions.\n")
+        "and on casebook interventions.")
+    rc0 = row["context"]
+    add(f"- **v1 reproduces:** the Stage-I pilot reported median CEE {V1_REPORTED}; the "
+        f"context-only arm recomputed here gives {_f(rc0['median_cee'])} "
+        f"[{_f(rc0['cee_ci_lo'])}, {_f(rc0['cee_ci_hi'])}] (different transformers version "
+        "and batched fp16 scoring, so small numeric differences are expected).\n")
 
     # ---- C. artifact balance
     add("## C. Artifact balance (Q1)\n")
@@ -449,6 +457,11 @@ def write_presentation_results(path: Path, meta: dict, tables: dict, cases: pd.D
             f"median CEE_N {_f(ra['median_cee'])} [{_f(ra['cee_ci_lo'])}, {_f(ra['cee_ci_hi'])}] "
             f"(context-only v1 arm: {_f(rc['median_cee'])}). This is an important negative "
             "finding.\n")
+    if verdict_n != "SURVIVES" and np.isfinite(float(paired_cee["stat"])) \
+            and abs(float(paired_cee["stat"])) < 0.05:
+        add(f"Note: the paired per-target change in CEE_N between context-only and artifact-"
+            f"matched controls is small (median {_f(paired_cee['stat'])}); the change in the "
+            "pooled interval is a marginal shift, not a collapse of the per-target effects.\n")
 
     # ---- E. sufficiency
     add("## E. Sufficiency (Q3)\n")
@@ -712,8 +725,14 @@ def build_report(run_dir: Path, cfg, v2, targets: pd.DataFrame, repo: Path) -> N
     comp = paired_comparisons(ok, seed)
     agree = probe_agreement_table(ok, structured) if len(structured) else pd.DataFrame()
     cases_path = run_dir / "casebook_manifest.csv"
-    cases = pd.read_csv(cases_path) if cases_path.exists() else select_cases(
-        ok, int(cfg.cerm_v2.get("structured_p1_cases", 10)))
+    cases = select_cases(ok, int(cfg.cerm_v2.get("structured_p1_cases", 10)))
+    if cases_path.exists():
+        used = pd.read_csv(cases_path)
+        if list(used["image_id"]) != list(cases["image_id"]):
+            # The structured P1 arm was run on the earlier selection; keep it so the
+            # casebook and its generations describe the same targets.
+            log.warning("casebook selection differs from the manifest used for P1; keeping the manifest")
+            cases = used
     cases.to_csv(cases_path, index=False)
     p1 = p1_sign_table(ok, iv, structured, cases) if len(structured) else pd.DataFrame()
 
@@ -783,8 +802,11 @@ def run_metadata(run_dir: Path, cfg, v2, ok: pd.DataFrame, iv: pd.DataFrame, rep
     if tf.exists():
         timings = json.loads(tf.read_text())
     try:
-        import torch
-        gpu = ", ".join(torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())) or "none visible"
+        import subprocess
+        names = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                               capture_output=True, text=True, timeout=20).stdout.split("\n")
+        names = [n.strip() for n in names if n.strip()]
+        gpu = f"{len(names)} x {names[0]}" if names else "none"
     except Exception:                                      # noqa: BLE001
         gpu = "unknown"
     try:

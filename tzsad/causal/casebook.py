@@ -127,8 +127,10 @@ def select_cases(records: pd.DataFrame, n_p1: int = 10) -> pd.DataFrame:
         if len(rows) >= n_p1:
             break
         target = ok["cee_n_artifact"].quantile(q)
-        add(f"spread_q{int(q * 100):02d}",
-            *_pick(ok, -(ok["cee_n_artifact"] - target).abs(), taken))
+        slot = f"spread_q{int(q * 100):02d}"
+        SLOTS.setdefault(slot, f"P1 padding: target whose CEE_N is closest to its "
+                               f"{int(q * 100)}th percentile")
+        add(slot, *_pick(ok, -(ok["cee_n_artifact"] - target).abs(), taken))
     return pd.DataFrame(rows[:max(n_p1, len(SLOTS))])
 
 
