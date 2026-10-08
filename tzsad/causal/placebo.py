@@ -211,11 +211,60 @@ def generate_placebos(
     A :class:`PlaceboPlan`. Fewer than ``k`` placebos is a reported outcome, never
     silently padded: the tail resolution depends on how many were actually found.
     """
-    h, w = mask.shape
     area = int(mask.sum())
     if area == 0:
         return PlaceboPlan(n_requested=k, quality="degenerate", reason="empty defect mask")
+    feasible, reason = feasible_candidates(
+        image, mask, max_iou=max_iou, ring_width=ring_width,
+        candidate_stride=candidate_stride, use_gradient=use_gradient,
+        max_candidates=max_candidates)
+    if not feasible:
+        return PlaceboPlan(n_requested=k, quality="degenerate", reason=reason)
 
+    feasible.sort(key=lambda t: t[0])
+    n_keep = max(int(round(len(feasible) * match_quantile)), min(k, len(feasible)))
+    pool = feasible[:n_keep]
+
+    quality, reason = "ok", ""
+    if min_pool and len(pool) < min_pool:
+        quality, reason = "few_matched", f"matched pool {len(pool)} < min_pool {min_pool}"
+
+    rng = _stable_rng(seed, image_id, area, k)
+    chosen = [PlaceboMask(i, int(dx), int(dy), dist, iou, area)
+              for i, (dist, dy, dx, iou) in enumerate(
+                  draw_separated(pool, k, rng, min_separation))]
+
+    if len(chosen) < k and quality == "ok":
+        quality = "few_feasible"
+        reason = (f"only {len(chosen)} distinct placements found for k={k} "
+                  f"(feasible={len(feasible)}, pool={len(pool)}, min_separation={min_separation})")
+        log.warning("%s: %s", image_id or "image", reason)
+
+    return PlaceboPlan(chosen, k, len(feasible), len(pool), quality, reason)
+
+
+def feasible_candidates(
+    image: np.ndarray,
+    mask: np.ndarray,
+    max_iou: float = 0.01,
+    ring_width: int = 12,
+    candidate_stride: int = 8,
+    use_gradient: bool = True,
+    max_candidates: int = 600,
+) -> tuple[list[tuple[float, int, int, float]], str]:
+    """Every admissible translation of ``mask``, with its context distance.
+
+    Returns ``([(context_distance, dy, dx, iou), ...], reason)`` in grid order;
+    ``reason`` explains an empty list. Admissible means: every mask pixel stays inside
+    the image (no clipping, so area is preserved), IoU with the defect is at most
+    ``max_iou``, and the offset is not the identity. Shared by the Stage-I context
+    arm and the v2 random and artifact-matched arms, so all three draw from the same
+    candidate geometry.
+    """
+    h, w = mask.shape
+    area = int(mask.sum())
+    if area == 0:
+        return [], "empty defect mask"
     ys, xs = np.nonzero(mask)
     y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
     # Offsets that keep every mask pixel inside the image: no clipping is allowed,
@@ -223,14 +272,11 @@ def generate_placebos(
     dy_lo, dy_hi = -int(y0), int(h - 1 - y1)
     dx_lo, dx_hi = -int(x0), int(w - 1 - x1)
     if dy_hi < dy_lo or dx_hi < dx_lo:
-        return PlaceboPlan(n_requested=k, quality="degenerate",
-                           reason="defect mask spans the image; no translation fits")
-
-    target_ring = context_ring(mask, ring_width)
-    target_desc = ring_descriptor(image, target_ring, use_gradient)
+        return [], "defect mask spans the image; no translation fits"
 
     # Precompute once: the defect's ring coordinates and the image gradient. Every
     # candidate is a translation of this ring, so no further dilation is needed.
+    target_ring = context_ring(mask, ring_width)
     ring_ys, ring_xs = np.nonzero(target_ring)
     grad = gradient_magnitude(image) if use_gradient else None
     target_desc = ring_descriptor_at(image, grad, ring_ys, ring_xs)
@@ -263,37 +309,28 @@ def generate_placebos(
         dist = float(np.linalg.norm(
             ring_descriptor_at(image, grad, rys[keep], rxs[keep]) - target_desc))
         feasible.append((dist, dy, dx, iou))
-
     if not feasible:
-        return PlaceboPlan(n_requested=k, quality="degenerate",
-                           reason="no translation satisfies the IoU and bounds constraints")
+        return [], "no translation satisfies the IoU and bounds constraints"
+    return feasible, ""
 
-    feasible.sort(key=lambda t: t[0])
-    n_keep = max(int(round(len(feasible) * match_quantile)), min(k, len(feasible)))
-    pool = feasible[:n_keep]
 
-    quality, reason = "ok", ""
-    if min_pool and len(pool) < min_pool:
-        quality, reason = "few_matched", f"matched pool {len(pool)} < min_pool {min_pool}"
+def draw_separated(pool: Sequence[tuple], k: int, rng: np.random.Generator,
+                   min_separation: int) -> list[tuple]:
+    """Uniform draw of up to ``k`` pool entries, pairwise Chebyshev-separated.
 
-    rng = _stable_rng(seed, image_id, area, k)
-    order = rng.permutation(len(pool))
-    chosen: list[PlaceboMask] = []
-    for idx in order:
+    Pool entries are tuples whose 2nd and 3rd fields are ``dy, dx``. Visiting the
+    pool in a random permutation (rather than best-first) is what keeps the chosen
+    placebos from being near-duplicates of one another.
+    """
+    chosen: list[tuple] = []
+    for idx in rng.permutation(len(pool)):
         if len(chosen) >= k:
             break
-        dist, dy, dx, iou = pool[idx]
-        if any(max(abs(dy - c.dy), abs(dx - c.dx)) < min_separation for c in chosen):
+        cand = pool[idx]
+        if any(max(abs(cand[1] - c[1]), abs(cand[2] - c[2])) < min_separation for c in chosen):
             continue        # too close to one already taken: not an independent placement
-        chosen.append(PlaceboMask(len(chosen), int(dx), int(dy), dist, iou, area))
-
-    if len(chosen) < k and quality == "ok":
-        quality = "few_feasible"
-        reason = (f"only {len(chosen)} distinct placements found for k={k} "
-                  f"(feasible={len(feasible)}, pool={len(pool)}, min_separation={min_separation})")
-        log.warning("%s: %s", image_id or "image", reason)
-
-    return PlaceboPlan(chosen, k, len(feasible), len(pool), quality, reason)
+        chosen.append(cand)
+    return chosen
 
 
 def placebo_mask_array(mask: np.ndarray, placebo: PlaceboMask) -> np.ndarray:
